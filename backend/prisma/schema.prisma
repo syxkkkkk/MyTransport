@@ -1,0 +1,272 @@
+// ─── Prisma Schema — MyTransport Malaysia ───────────────────────────────────
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  passwordHash   String
+  name           String
+  avatarUrl      String?
+  phoneNumber    String?
+  isEmailVerified Boolean @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  savedLocations SavedLocation[]
+  trips          Trip[]
+  chatSessions   ChatSession[]
+  notifications  Notification[]
+  refreshTokens  RefreshToken[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+// ─── Locations ────────────────────────────────────────────────────────────────
+
+model SavedLocation {
+  id        String   @id @default(cuid())
+  userId    String
+  label     String   // "Home", "Work", custom
+  name      String
+  address   String
+  latitude  Float
+  longitude Float
+  icon      String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("saved_locations")
+}
+
+// ─── Transit Infrastructure ───────────────────────────────────────────────────
+
+model TransitLine {
+  id        String   @id @default(cuid())
+  code      String   @unique  // "KJ", "KG", "MRT_PY", "BRT", "MRL", "ERL"
+  name      String             // "Kelana Jaya Line"
+  shortName String             // "KJ Line"
+  color     String             // "#E51937"
+  type      LineType
+  operator  String             // "Rapid KL", "KLIA Transit"
+  isActive  Boolean  @default(true)
+
+  stations     StationLine[]
+  departures   Departure[]
+  alerts       TransitAlert[]
+
+  @@map("transit_lines")
+}
+
+model Station {
+  id        String   @id @default(cuid())
+  code      String   @unique  // "KJ15", "KG14"
+  name      String             // "KL Sentral"
+  nameMy    String?            // Malay name
+  address   String?
+  latitude  Float
+  longitude Float
+  facilities String[]          // ["wheelchair", "parking", "atm"]
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  lines      StationLine[]
+  departures Departure[]
+
+  @@map("stations")
+}
+
+model StationLine {
+  id         String @id @default(cuid())
+  stationId  String
+  lineId     String
+  sequence   Int              // order on the line
+  zoneNumber Int?             // fare zone
+
+  station Station     @relation(fields: [stationId], references: [id])
+  line    TransitLine @relation(fields: [lineId], references: [id])
+
+  @@unique([stationId, lineId])
+  @@map("station_lines")
+}
+
+model Departure {
+  id          String        @id @default(cuid())
+  stationId   String
+  lineId      String
+  direction   String        // "Putra Heights" | "Gombak"
+  scheduledAt DateTime
+  estimatedAt DateTime?
+  platform    String?
+  status      DepartureStatus @default(ON_TIME)
+  trainId     String?
+
+  station Station     @relation(fields: [stationId], references: [id])
+  line    TransitLine @relation(fields: [lineId], references: [id])
+
+  @@map("departures")
+}
+
+model TransitAlert {
+  id          String      @id @default(cuid())
+  lineId      String?
+  title       String
+  description String
+  severity    AlertSeverity @default(INFO)
+  startAt     DateTime    @default(now())
+  endAt       DateTime?
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+
+  line TransitLine? @relation(fields: [lineId], references: [id])
+
+  @@map("transit_alerts")
+}
+
+// ─── Routes & Trips ───────────────────────────────────────────────────────────
+
+model Route {
+  id              String   @id @default(cuid())
+  fromName        String
+  fromLat         Float
+  fromLon         Float
+  toLat           Float
+  toLon           Float
+  toName          String
+  durationMinutes Int
+  distanceKm      Float
+  fareMyR         Float
+  steps           Json     // array of RouteStep
+  createdAt       DateTime @default(now())
+
+  trips Trip[]
+
+  @@map("routes")
+}
+
+model Trip {
+  id        String     @id @default(cuid())
+  userId    String
+  routeId   String
+  status    TripStatus @default(PLANNED)
+  startedAt DateTime?
+  endedAt   DateTime?
+  rating    Int?       // 1-5
+  feedback  String?
+  createdAt DateTime   @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  route Route @relation(fields: [routeId], references: [id])
+
+  @@map("trips")
+}
+
+// ─── Chatbot ──────────────────────────────────────────────────────────────────
+
+model ChatSession {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  sessionId String
+  role      MessageRole
+  content   String
+  createdAt DateTime    @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("chat_messages")
+}
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  title     String
+  body      String
+  type      NotificationType
+  data      Json?
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum LineType {
+  LRT
+  MRT
+  BRT
+  KTM
+  ERL
+  MONORAIL
+  BUS
+}
+
+enum DepartureStatus {
+  ON_TIME
+  DELAYED
+  CANCELLED
+  ARRIVED
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum TripStatus {
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+}
+
+enum NotificationType {
+  TRIP_REMINDER
+  TRANSIT_ALERT
+  SERVICE_UPDATE
+  PROMOTION
+  SYSTEM
+}
