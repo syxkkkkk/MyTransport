@@ -1,0 +1,121 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-inter: "Inter", "sans-serif";
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-body-lg: "Inter", sans-serif;
+  --font-headline-lg: "Inter", sans-serif;
+  --font-headline-lg-mobile: "Inter", sans-serif;
+  --font-mono-label: "Inter", sans-serif;
+  --font-body-sm: "Inter", sans-serif;
+  --font-label-caps: "Inter", sans-serif;
+  --font-headline-md: "Inter", sans-serif;
+
+  --color-surface: #ffffff;
+  --color-surface-dim: #f1f5f9;
+  --color-surface-bright: #ffffff;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f8fafc;
+  --color-surface-container: #f1f5f9;
+  --color-surface-container-high: #e2e8f0;
+  --color-surface-container-highest: #cbd5e1;
+  --color-surface-variant: #e2e8f0;
+  --color-on-surface: #1e293b;
+  --color-on-surface-variant: #64748b;
+  --color-inverse-surface: #1e293b;
+  --color-inverse-on-surface: #f8fafc;
+  --color-outline: #94a3b8;
+  --color-outline-variant: #e2e8f0;
+  --color-surface-tint: #4f46e5;
+  --color-primary: #4f46e5;
+  --color-on-primary: #ffffff;
+  --color-primary-container: #e0e7ff;
+  --color-on-primary-container: #4338ca;
+  --color-inverse-primary: #a5b4fc;
+  --color-secondary: #0ea5e9;
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #e0f2fe;
+  --color-on-secondary-container: #0369a1;
+  --color-tertiary: #059669;
+  --color-on-tertiary: #ffffff;
+  --color-tertiary-container: #d1fae5;
+  --color-on-tertiary-container: #047857;
+  --color-error: #ef4444;
+  --color-on-error: #ffffff;
+  --color-error-container: #fee2e2;
+  --color-on-error-container: #b91c1c;
+  --color-primary-fixed: #e0e7ff;
+  --color-primary-fixed-dim: #a5b4fc;
+  --color-on-primary-fixed: #312e81;
+  --color-on-primary-fixed-variant: #3730a3;
+  --color-secondary-fixed: #e0f2fe;
+  --color-secondary-fixed-dim: #7dd3fc;
+  --color-on-secondary-fixed: #082f49;
+  --color-on-secondary-fixed-variant: #0c4a6e;
+  --color-tertiary-fixed: #d1fae5;
+  --color-tertiary-fixed-dim: #6ee7b7;
+  --color-on-tertiary-fixed: #022c22;
+  --color-on-tertiary-fixed-variant: #064e3b;
+  --color-background: #f1f5f9;
+  --color-on-background: #0f172a;
+
+  --radius-xs: 0.5rem;
+  --radius-sm: 0.75rem;
+  --radius-md: 1rem;
+  --radius-lg: 1.25rem;
+  --radius-xl: 1.5rem;
+  --radius-2xl: 1.75rem;
+  --radius-3xl: 2rem;
+  --radius-4xl: 2.5rem;
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+
+  --spacing-base: 4px;
+  --spacing-xs: 8px;
+  --spacing-sm: 12px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  --spacing-gutter: 16px;
+  --spacing-margin-mobile: 20px;
+  --spacing-margin-desktop: 40px;
+}
+
+@utility font-headline-lg { font-size: 32px; line-height: 40px; letter-spacing: -0.02em; font-weight: 700; }
+@utility text-headline-lg { font-size: 32px; line-height: 40px; letter-spacing: -0.02em; font-weight: 700; }
+@utility font-headline-lg-mobile { font-size: 24px; line-height: 32px; letter-spacing: -0.01em; font-weight: 700; }
+@utility text-headline-lg-mobile { font-size: 24px; line-height: 32px; letter-spacing: -0.01em; font-weight: 700; }
+@utility font-headline-md { font-size: 20px; line-height: 28px; font-weight: 600; }
+@utility text-headline-md { font-size: 20px; line-height: 28px; font-weight: 600; }
+@utility font-body-lg { font-size: 16px; line-height: 24px; font-weight: 400; }
+@utility text-body-lg { font-size: 16px; line-height: 24px; font-weight: 400; }
+@utility font-body-sm { font-size: 14px; line-height: 20px; font-weight: 400; }
+@utility text-body-sm { font-size: 14px; line-height: 20px; font-weight: 400; }
+@utility font-label-caps { font-size: 12px; line-height: 16px; letter-spacing: 0.05em; font-weight: 700; }
+@utility text-label-caps { font-size: 12px; line-height: 16px; letter-spacing: 0.05em; font-weight: 700; }
+@utility font-mono-label { font-size: 13px; line-height: 16px; letter-spacing: 0.02em; font-weight: 500; }
+@utility text-mono-label { font-size: 13px; line-height: 16px; letter-spacing: 0.02em; font-weight: 500; }
+
+@keyframes fade-in-up {
+  0% { opacity: 0; transform: translateY(20px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse-arrow {
+  0% { opacity: 0.4; transform: translateX(-50%) perspective(500px) rotateX(60deg) translateY(0); }
+  50% { opacity: 0.9; transform: translateX(-50%) perspective(500px) rotateX(60deg) translateY(-20px); }
+  100% { opacity: 0.4; transform: translateX(-50%) perspective(500px) rotateX(60deg) translateY(0); }
+}
+
+@utility animate-fade-in-up {
+  animation: fade-in-up 0.8s ease-out forwards;
+}
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+
+body {
+  margin: 0;
+  -webkit-tap-highlight-color: transparent;
+}
