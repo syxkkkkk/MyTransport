@@ -1,9 +1,76 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import '../services/gtfs_realtime_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/bottom_nav_bar.dart';
 
-class LiveTrainNotificationsScreen extends StatelessWidget {
+class LiveTrainNotificationsScreen extends StatefulWidget {
   const LiveTrainNotificationsScreen({super.key});
+
+  @override
+  State<LiveTrainNotificationsScreen> createState() =>
+      _LiveTrainNotificationsScreenState();
+}
+
+class _LiveTrainNotificationsScreenState
+    extends State<LiveTrainNotificationsScreen> {
+  GtfsFeed? _feed;
+  bool _loading = true;
+  String? _error;
+  Timer? _refreshTimer;
+  DateTime? _lastFetched;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+    // Auto-refresh every 30 seconds (matches API update cadence)
+    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) => _fetch());
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _fetch() async {
+    if (!mounted) return;
+    setState(() { _error = null; _loading = _feed == null; });
+    try {
+      final feed = await GtfsRealtimeService.fetchKtmbVehicles();
+      if (!mounted) return;
+      setState(() {
+        _feed = feed;
+        _loading = false;
+        _lastFetched = DateTime.now();
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  // Group vehicles by route, sorted by route id
+  Map<String, List<VehiclePositionData>> get _byRoute {
+    final map = <String, List<VehiclePositionData>>{};
+    for (final v in (_feed?.vehicles ?? [])) {
+      final key = v.routeId.isNotEmpty ? v.routeId : 'Unknown';
+      map.putIfAbsent(key, () => []).add(v);
+    }
+    // Sort: active (in-transit) routes first
+    final sorted = map.entries.toList()
+      ..sort((a, b) {
+        final aMoving = a.value.where((v) => !v.isStopped).length;
+        final bMoving = b.value.where((v) => !v.isStopped).length;
+        return bMoving.compareTo(aMoving);
+      });
+    return Map.fromEntries(sorted);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -29,146 +96,184 @@ class LiveTrainNotificationsScreen extends StatelessWidget {
         centerTitle: true,
         actions: [
           IconButton(
-            icon: const Icon(Icons.search, color: AppColors.primary),
-            onPressed: () {},
+            icon: _loading && _feed != null
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.primary,
+                    ),
+                  )
+                : const Icon(Icons.refresh, color: AppColors.primary),
+            onPressed: _fetch,
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+      body: _buildBody(),
+      bottomNavigationBar: const BottomNavBar(currentTab: NavTab.announcement),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_loading) return const _LoadingView();
+    if (_error != null && _feed == null) return _ErrorView(error: _error!, onRetry: _fetch);
+
+    final routes = _byRoute;
+    final totalVehicles = _feed?.vehicles.length ?? 0;
+    final movingCount = _feed?.vehicles.where((v) => !v.isStopped).length ?? 0;
+
+    return RefreshIndicator(
+      onRefresh: _fetch,
+      color: AppColors.primary,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
         children: [
-          // Service disruption banner
-          const _DisruptionBanner(),
+          // ── Live status header ──────────────────────────────────────────
+          _LiveStatusHeader(
+            totalVehicles: totalVehicles,
+            movingCount: movingCount,
+            lastFetched: _lastFetched,
+            hasError: _error != null,
+          ),
+          const SizedBox(height: 16),
+
+          // ── Alerts note (service alerts not yet in API) ─────────────────
+          const _AlertsComingSoonBanner(),
           const SizedBox(height: 20),
 
-          // Departures header
+          // ── Section header ──────────────────────────────────────────────
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
-                'Departures',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
+              Text(
+                'KTMB Active Trains',
+                style: GoogleFonts.inter(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
                   color: AppColors.onSurface,
                 ),
               ),
-              GestureDetector(
-                onTap: () {},
-                child: const Row(
-                  children: [
-                    Icon(Icons.settings_outlined, size: 16, color: AppColors.primary),
-                    SizedBox(width: 4),
-                    Text(
-                      'Customize',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.2,
-                        color: AppColors.primary,
-                      ),
-                    ),
-                  ],
+              Text(
+                '${routes.length} route${routes.length == 1 ? '' : 's'}',
+                style: GoogleFonts.inter(
+                  fontSize: 12,
+                  color: AppColors.onSurfaceVariant,
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-
-          // KJ Line card
-          const _DepartureCard(
-            lineColor: AppColors.kjLineRed,
-            lineLabel: 'KJ Line',
-            platform: 'Platform 1',
-            station: 'KL Sentral',
-            isStarred: true,
-            departures: [
-              _DepartureEntry(
-                direction: 'Towards Gombak',
-                status: _DepartureStatus.onTime,
-                minutes: '2 min',
-                isPrimary: true,
-              ),
-              _DepartureEntry(
-                direction: 'Towards Gombak',
-                status: null,
-                minutes: '8 min',
-                isPrimary: false,
               ),
             ],
           ),
           const SizedBox(height: 12),
 
-          // Kajang Line card
-          const _DepartureCard(
-            lineColor: AppColors.kajangLineGreen,
-            lineLabel: 'Kajang Line',
-            platform: 'Platform 2',
-            station: 'Pasar Seni',
-            isStarred: false,
-            departures: [
-              _DepartureEntry(
-                direction: 'Towards Kwasa Damansara',
-                status: _DepartureStatus.delayed,
-                minutes: '14 min',
-                isPrimary: true,
-              ),
-            ],
-          ),
+          // ── Empty state ─────────────────────────────────────────────────
+          if (routes.isEmpty)
+            const _EmptyState()
+          else
+            ...routes.entries.map((entry) {
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _RouteCard(
+                  routeId: entry.key,
+                  vehicles: entry.value,
+                ),
+              );
+            }),
         ],
       ),
-      bottomNavigationBar: const BottomNavBar(currentTab: NavTab.announcement),
     );
   }
 }
 
-class _DisruptionBanner extends StatelessWidget {
-  const _DisruptionBanner();
+// ── Live status header ────────────────────────────────────────────────────────
+
+class _LiveStatusHeader extends StatelessWidget {
+  final int totalVehicles;
+  final int movingCount;
+  final DateTime? lastFetched;
+  final bool hasError;
+
+  const _LiveStatusHeader({
+    required this.totalVehicles,
+    required this.movingCount,
+    required this.lastFetched,
+    required this.hasError,
+  });
+
+  String get _updatedLabel {
+    if (lastFetched == null) return 'Updating…';
+    final diff = DateTime.now().difference(lastFetched!).inSeconds;
+    if (diff < 5) return 'Just now';
+    if (diff < 60) return '${diff}s ago';
+    return '${diff ~/ 60}m ago';
+  }
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: AppColors.errorContainer,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.secondary.withOpacity(0.4)),
+        gradient: LinearGradient(
+          colors: [
+            AppColors.primary.withOpacity(0.12),
+            AppColors.primary.withOpacity(0.05),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.primary.withOpacity(0.2)),
       ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.warning_amber_rounded,
-              size: 22, color: AppColors.secondary),
-          const SizedBox(width: 10),
-          const Expanded(
+          // Live dot
+          _LiveDot(active: !hasError),
+          const SizedBox(width: 12),
+
+          // Counts
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Service Disruption',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.secondary,
+                  '$totalVehicles vehicle${totalVehicles == 1 ? '' : 's'} tracked',
+                  style: GoogleFonts.inter(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.onSurface,
                   ),
                 ),
-                SizedBox(height: 4),
+                const SizedBox(height: 2),
                 Text(
-                  'Minor delays on the MRT Putrajaya Line due to track maintenance near Cyberjaya. Please allow extra travel time.',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: AppColors.onErrorContainer,
-                    height: 1.4,
+                  '$movingCount in transit · ${totalVehicles - movingCount} stopped',
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    color: AppColors.onSurfaceVariant,
                   ),
                 ),
               ],
             ),
           ),
-          IconButton(
-            icon: const Icon(Icons.close, size: 16, color: AppColors.secondary),
-            onPressed: () {},
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+
+          // Last updated
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                'KTMB',
+                style: GoogleFonts.inter(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.6,
+                  color: AppColors.primary,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                _updatedLabel,
+                style: GoogleFonts.inter(
+                  fontSize: 11,
+                  color: AppColors.onSurfaceVariant,
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -176,40 +281,116 @@ class _DisruptionBanner extends StatelessWidget {
   }
 }
 
-enum _DepartureStatus { onTime, delayed }
+class _LiveDot extends StatefulWidget {
+  final bool active;
+  const _LiveDot({required this.active});
 
-class _DepartureEntry {
-  final String direction;
-  final _DepartureStatus? status;
-  final String minutes;
-  final bool isPrimary;
-  const _DepartureEntry({
-    required this.direction,
-    required this.status,
-    required this.minutes,
-    required this.isPrimary,
-  });
+  @override
+  State<_LiveDot> createState() => _LiveDotState();
 }
 
-class _DepartureCard extends StatelessWidget {
-  final Color lineColor;
-  final String lineLabel;
-  final String platform;
-  final String station;
-  final bool isStarred;
-  final List<_DepartureEntry> departures;
+class _LiveDotState extends State<_LiveDot> with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _scale;
 
-  const _DepartureCard({
-    required this.lineColor,
-    required this.lineLabel,
-    required this.platform,
-    required this.station,
-    required this.isStarred,
-    required this.departures,
-  });
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..repeat(reverse: true);
+    _scale = Tween<double>(begin: 0.8, end: 1.2).animate(
+      CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final color = widget.active ? const Color(0xFF34A853) : AppColors.outline;
+    return ScaleTransition(
+      scale: _scale,
+      child: Container(
+        width: 12,
+        height: 12,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: color,
+          boxShadow: widget.active
+              ? [BoxShadow(color: color.withOpacity(0.5), blurRadius: 6, spreadRadius: 2)]
+              : null,
+        ),
+      ),
+    );
+  }
+}
+
+// ── Alerts coming-soon banner ─────────────────────────────────────────────────
+
+class _AlertsComingSoonBanner extends StatelessWidget {
+  const _AlertsComingSoonBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.blue.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.blue.shade100),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.info_outline, size: 18, color: Colors.blue.shade600),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Service alerts & departure times are coming in 2026 via Malaysia\'s GTFS Realtime feed.',
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                color: Colors.blue.shade800,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Route card ────────────────────────────────────────────────────────────────
+
+class _RouteCard extends StatelessWidget {
+  final String routeId;
+  final List<VehiclePositionData> vehicles;
+
+  const _RouteCard({required this.routeId, required this.vehicles});
+
+  // Pick a consistent color per route
+  Color get _routeColor {
+    final colors = [
+      AppColors.primary,
+      const Color(0xFF34A853),
+      const Color(0xFFFBBC04),
+      const Color(0xFFEA4335),
+      const Color(0xFF9C27B0),
+      const Color(0xFF00BCD4),
+    ];
+    return colors[routeId.hashCode.abs() % colors.length];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final moving = vehicles.where((v) => !v.isStopped).length;
+    final color = _routeColor;
+
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
@@ -229,80 +410,66 @@ class _DepartureCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Color bar
-            Container(width: 6, color: lineColor),
+            Container(width: 5, color: color),
 
             // Content
             Expanded(
               child: Padding(
-                padding: const EdgeInsets.all(14),
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Header row
                     Row(
                       children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 3),
-                                    decoration: BoxDecoration(
-                                      color: lineColor.withOpacity(0.1),
-                                      borderRadius: BorderRadius.circular(20),
-                                    ),
-                                    child: Text(
-                                      lineLabel,
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w700,
-                                        letterSpacing: 0.4,
-                                        color: lineColor,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  const Icon(Icons.location_on_outlined,
-                                      size: 13, color: AppColors.onSurfaceVariant),
-                                  const SizedBox(width: 2),
-                                  Text(
-                                    platform,
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w500,
-                                      color: AppColors.onSurfaceVariant,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                station,
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w600,
-                                  color: AppColors.onSurface,
-                                ),
-                              ),
-                            ],
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: color.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            routeId,
+                            style: GoogleFonts.inter(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.4,
+                              color: color,
+                            ),
                           ),
                         ),
-                        Icon(
-                          isStarred ? Icons.star : Icons.star_border,
-                          size: 22,
-                          color: isStarred ? AppColors.primary : AppColors.outline,
+                        const SizedBox(width: 8),
+                        Icon(Icons.train_outlined,
+                            size: 13, color: AppColors.onSurfaceVariant),
+                        const SizedBox(width: 3),
+                        Text(
+                          '${vehicles.length} train${vehicles.length == 1 ? '' : 's'}',
+                          style: GoogleFonts.inter(
+                            fontSize: 11,
+                            color: AppColors.onSurfaceVariant,
+                          ),
                         ),
+                        const Spacer(),
+                        _MovingBadge(count: moving, total: vehicles.length),
                       ],
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
 
-                    // Departure entries
-                    ...departures.map((d) => Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: _DepartureRow(entry: d),
+                    // Vehicle rows (show up to 5)
+                    ...vehicles.take(5).map((v) => Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: _VehicleRow(vehicle: v),
                         )),
+
+                    if (vehicles.length > 5)
+                      Text(
+                        '+${vehicles.length - 5} more trains',
+                        style: GoogleFonts.inter(
+                          fontSize: 11,
+                          color: AppColors.onSurfaceVariant,
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -314,83 +481,163 @@ class _DepartureCard extends StatelessWidget {
   }
 }
 
-class _DepartureRow extends StatelessWidget {
-  final _DepartureEntry entry;
-  const _DepartureRow({required this.entry});
+class _MovingBadge extends StatelessWidget {
+  final int count;
+  final int total;
+  const _MovingBadge({required this.count, required this.total});
 
   @override
   Widget build(BuildContext context) {
-    return Opacity(
-      opacity: entry.isPrimary ? 1.0 : 0.65,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: AppColors.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: AppColors.surfaceVariant),
+    final allStopped = count == 0;
+    final color = allStopped ? AppColors.outline : const Color(0xFF34A853);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 7,
+          height: 7,
+          decoration: BoxDecoration(shape: BoxShape.circle, color: color),
         ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    entry.direction,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      color: AppColors.onSurfaceVariant,
-                    ),
+        const SizedBox(width: 4),
+        Text(
+          allStopped ? 'All stopped' : '$count moving',
+          style: GoogleFonts.inter(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _VehicleRow extends StatelessWidget {
+  final VehiclePositionData vehicle;
+  const _VehicleRow({required this.vehicle});
+
+  @override
+  Widget build(BuildContext context) {
+    final kmh = vehicle.speedKmh;
+    final speedText = kmh != null ? '${kmh.round()} km/h' : '—';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.surfaceVariant),
+      ),
+      child: Row(
+        children: [
+          // Train icon
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: vehicle.isStopped
+                  ? AppColors.surfaceVariant
+                  : AppColors.primaryContainer,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              vehicle.isStopped
+                  ? Icons.stop_circle_outlined
+                  : Icons.directions_railway_outlined,
+              size: 15,
+              color: vehicle.isStopped
+                  ? AppColors.onSurfaceVariant
+                  : AppColors.primary,
+            ),
+          ),
+          const SizedBox(width: 10),
+
+          // Label + status
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  vehicle.vehicleLabel.isNotEmpty
+                      ? vehicle.vehicleLabel
+                      : 'Train ${vehicle.entityId}',
+                  style: GoogleFonts.inter(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.onSurface,
                   ),
-                  if (entry.status != null) ...[
-                    const SizedBox(height: 4),
-                    _StatusBadge(status: entry.status!),
-                  ],
-                ],
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  vehicle.statusLabel,
+                  style: GoogleFonts.inter(
+                    fontSize: 11,
+                    color: vehicle.isStopped
+                        ? AppColors.onSurfaceVariant
+                        : const Color(0xFF34A853),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Speed
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                speedText,
+                style: GoogleFonts.inter(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: vehicle.isStopped
+                      ? AppColors.outline
+                      : AppColors.primary,
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            _TimingDisplay(
-              minutes: entry.minutes,
-              isDelayed: entry.status == _DepartureStatus.delayed,
-            ),
-          ],
-        ),
+              Text(
+                vehicle.tripId.isNotEmpty
+                    ? 'Trip ${vehicle.tripId.length > 8 ? vehicle.tripId.substring(0, 8) : vehicle.tripId}'
+                    : '',
+                style: GoogleFonts.inter(
+                  fontSize: 10,
+                  color: AppColors.outline,
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
 }
 
-class _StatusBadge extends StatelessWidget {
-  final _DepartureStatus status;
-  const _StatusBadge({required this.status});
+// ── Loading view ──────────────────────────────────────────────────────────────
+
+class _LoadingView extends StatelessWidget {
+  const _LoadingView();
 
   @override
   Widget build(BuildContext context) {
-    final isOnTime = status == _DepartureStatus.onTime;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: isOnTime
-            ? AppColors.tertiaryContainer.withOpacity(0.2)
-            : AppColors.secondaryContainer.withOpacity(0.3),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
+    return Center(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            isOnTime ? Icons.check_circle_outline : Icons.access_time,
-            size: 11,
-            color: isOnTime ? AppColors.tertiary : AppColors.secondary,
-          ),
-          const SizedBox(width: 4),
+          const CircularProgressIndicator(color: AppColors.primary),
+          const SizedBox(height: 16),
           Text(
-            isOnTime ? 'On Time' : '10 min Delay',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: isOnTime ? AppColors.tertiary : AppColors.secondary,
+            'Fetching live train data…',
+            style: GoogleFonts.inter(
+              fontSize: 14,
+              color: AppColors.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'KTMB via data.gov.my',
+            style: GoogleFonts.inter(
+              fontSize: 12,
+              color: AppColors.outline,
             ),
           ),
         ],
@@ -399,50 +646,91 @@ class _StatusBadge extends StatelessWidget {
   }
 }
 
-class _TimingDisplay extends StatefulWidget {
-  final String minutes;
-  final bool isDelayed;
-  const _TimingDisplay({required this.minutes, required this.isDelayed});
+// ── Error view ────────────────────────────────────────────────────────────────
 
-  @override
-  State<_TimingDisplay> createState() => _TimingDisplayState();
-}
-
-class _TimingDisplayState extends State<_TimingDisplay>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-  late final Animation<double> _opacity;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    );
-    _opacity = Tween<double>(begin: 0.4, end: 1.0).animate(_ctrl);
-    if (widget.isDelayed) {
-      _ctrl.repeat(reverse: true);
-    }
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
+class _ErrorView extends StatelessWidget {
+  final String error;
+  final VoidCallback onRetry;
+  const _ErrorView({required this.error, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
-    final text = Text(
-      widget.minutes,
-      style: TextStyle(
-        fontSize: 22,
-        fontWeight: FontWeight.w700,
-        color: widget.isDelayed ? AppColors.secondary : AppColors.primary,
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.signal_wifi_off_outlined,
+                size: 48, color: AppColors.outline),
+            const SizedBox(height: 16),
+            Text(
+              'Could not load train data',
+              style: GoogleFonts.inter(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: AppColors.onSurface,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              error,
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                color: AppColors.onSurfaceVariant,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: const Text('Retry'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: AppColors.onPrimary,
+              ),
+            ),
+          ],
+        ),
       ),
     );
-    if (!widget.isDelayed) return text;
-    return FadeTransition(opacity: _opacity, child: text);
+  }
+}
+
+// ── Empty state ───────────────────────────────────────────────────────────────
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 40),
+      alignment: Alignment.center,
+      child: Column(
+        children: [
+          const Icon(Icons.train_outlined, size: 40, color: AppColors.outline),
+          const SizedBox(height: 12),
+          Text(
+            'No active trains at the moment',
+            style: GoogleFonts.inter(
+              fontSize: 14,
+              color: AppColors.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Data updates every 30 seconds',
+            style: GoogleFonts.inter(
+              fontSize: 12,
+              color: AppColors.outline,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
