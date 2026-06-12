@@ -1,357 +1,241 @@
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import '../theme/app_theme.dart';
 import '../widgets/bottom_nav_bar.dart';
+import '../services/chatbot_service.dart';
 
-class ChatbotScreen extends StatelessWidget {
+class ChatbotScreen extends StatefulWidget {
   const ChatbotScreen({super.key});
+
+  @override
+  State<ChatbotScreen> createState() => _ChatbotScreenState();
+}
+
+class _ChatbotScreenState extends State<ChatbotScreen> {
+  final _chatbotService = ChatbotService();
+  final _scrollController = ScrollController();
+  final _inputController = TextEditingController();
+  final _focusNode = FocusNode();
+
+  final List<_Message> _messages = [
+    _Message(
+      role: 'assistant',
+      text: 'Hi! I\'m your MyTransport AI assistant 🚇\n\nAsk me anything about getting around KL — routes, fares, stations, or real-time alerts!',
+      time: DateTime.now(),
+    ),
+  ];
+
+  bool _isLoading = false;
+
+  static const _suggestions = [
+    'How do I get to KLCC?',
+    'Best route to Bukit Bintang?',
+    'KL Sentral to Putrajaya?',
+    'LRT fare from Gombak to Kelana Jaya?',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _inputController.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send(String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty || _isLoading) return;
+    _inputController.clear();
+    setState(() {
+      _messages.add(_Message(role: 'user', text: trimmed, time: DateTime.now()));
+      _isLoading = true;
+    });
+    _scrollToBottom();
+    try {
+      final reply = await _chatbotService.sendMessage(trimmed);
+      if (mounted) {
+        setState(() {
+          _messages.add(_Message(role: 'assistant', text: reply.content, time: reply.createdAt));
+          _isLoading = false;
+        });
+        _scrollToBottom();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _messages.add(_Message(role: 'assistant', text: 'Sorry, I couldn\'t get a response. Please check your connection and try again.\n\n($e)', time: DateTime.now()));
+          _isLoading = false;
+        });
+        _scrollToBottom();
+      }
+    }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: AppColors.surface,
-        surfaceTintColor: Colors.transparent,
-        elevation: 1,
-        shadowColor: Colors.black.withOpacity(0.08),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: AppColors.primary),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: const Text(
-          'MyTransport Malaysia',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: AppColors.primary,
-          ),
-        ),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.search, color: AppColors.primary),
-            onPressed: () {},
-          ),
-        ],
-      ),
       body: Column(
         children: [
+          _buildHeader(),
           Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 20, 16, 20),
-              children: [
-                // User message
-                _UserBubble(
-                  text: 'How do I get from KL Sentral to Pavilion KL?',
-                ),
-                const SizedBox(height: 16),
-
-                // AI response
-                _AIResponse(
-                  onShowDetails: () =>
-                      Navigator.pushNamed(context, '/route-details'),
-                ),
-              ],
+            child: ListView.builder(
+              controller: _scrollController,
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              itemCount: _messages.length + (_isLoading ? 1 : 0),
+              itemBuilder: (ctx, i) {
+                if (i == _messages.length) return const _TypingIndicator();
+                return _MessageBubble(message: _messages[i]);
+              },
             ),
           ),
-
-          // Input bar (decorative)
-          _ChatInputBar(),
+          if (_messages.length == 1) _buildSuggestions(),
+          _buildInputBar(),
         ],
       ),
       bottomNavigationBar: const BottomNavBar(currentTab: NavTab.home),
     );
   }
-}
 
-class _UserBubble extends StatelessWidget {
-  final String text;
-  const _UserBubble({required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerRight,
-      child: Container(
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.8,
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        decoration: const BoxDecoration(
-          color: AppColors.primaryContainer,
-          borderRadius: BorderRadius.only(
-            topLeft: Radius.circular(16),
-            topRight: Radius.circular(4),
-            bottomLeft: Radius.circular(16),
-            bottomRight: Radius.circular(16),
-          ),
-        ),
-        child: Text(
-          text,
-          style: const TextStyle(
-            fontSize: 15,
-            color: AppColors.onPrimaryContainer,
-            height: 1.4,
-          ),
-        ),
+  Widget _buildHeader() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 52, 16, 16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        border: Border(bottom: BorderSide(color: AppColors.surfaceVariant)),
       ),
-    );
-  }
-}
-
-class _AIResponse extends StatelessWidget {
-  final VoidCallback onShowDetails;
-  const _AIResponse({required this.onShowDetails});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 34,
-          height: 34,
-          margin: const EdgeInsets.only(top: 4),
-          decoration: const BoxDecoration(
-            color: AppColors.surfaceContainerHighest,
-            shape: BoxShape.circle,
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.arrow_back, color: AppColors.onSurface),
+            onPressed: () => Navigator.pop(context),
+            padding: EdgeInsets.zero,
           ),
-          child: const Icon(Icons.smart_toy_outlined, size: 18, color: AppColors.primary),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Container(
-            padding: const EdgeInsets.all(16),
+          const SizedBox(width: 8),
+          Container(
+            width: 40, height: 40,
             decoration: BoxDecoration(
-              color: AppColors.surfaceContainerLowest,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(4),
-                topRight: Radius.circular(16),
-                bottomLeft: Radius.circular(16),
-                bottomRight: Radius.circular(16),
+              gradient: const LinearGradient(
+                colors: [AppColors.primary, AppColors.secondary],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
               ),
-              border: Border.all(color: AppColors.outlineVariant),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.04),
-                  blurRadius: 4,
-                  offset: const Offset(0, 1),
-                ),
-              ],
+              borderRadius: BorderRadius.circular(12),
             ),
+            child: const Icon(Icons.smart_toy_rounded, color: Colors.white, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Here is the fastest route for you:',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: AppColors.onSurface,
-                    height: 1.4,
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                // Route card
-                _RouteCard(),
-                const SizedBox(height: 12),
-
-                // Show details button
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: onShowDetails,
-                    icon: const Icon(Icons.info_outline, size: 16),
-                    label: const Text('Show Details'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.primary,
-                      side: const BorderSide(color: AppColors.primary),
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      textStyle: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                  ),
+                Text('MyTransport AI', style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 16, color: AppColors.onSurface)),
+                Row(
+                  children: [
+                    Container(width: 6, height: 6, decoration: const BoxDecoration(color: Color(0xFF22C55E), shape: BoxShape.circle)),
+                    const SizedBox(width: 4),
+                    Text('Online · Gemini AI', style: GoogleFonts.inter(fontSize: 12, color: AppColors.onSurfaceVariant)),
+                  ],
                 ),
               ],
             ),
           ),
-        ),
-      ],
+          IconButton(
+            icon: const Icon(Icons.refresh, color: AppColors.onSurfaceVariant),
+            onPressed: () {
+              _chatbotService.resetSession();
+              setState(() {
+                _messages.clear();
+                _messages.add(_Message(role: 'assistant', text: 'New session started! How can I help you navigate KL today?', time: DateTime.now()));
+              });
+            },
+          ),
+        ],
+      ),
     );
   }
-}
 
-class _RouteCard extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: const Border(
-          left: BorderSide(color: AppColors.tertiaryContainer, width: 4),
+  Widget _buildSuggestions() {
+    return SizedBox(
+      height: 44,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: _suggestions.length,
+        itemBuilder: (ctx, i) => Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: ActionChip(
+            label: Text(_suggestions[i], style: GoogleFonts.inter(fontSize: 12, color: AppColors.primary)),
+            backgroundColor: AppColors.primaryContainer,
+            side: BorderSide(color: AppColors.primary.withOpacity(0.3)),
+            onPressed: () => _send(_suggestions[i]),
+          ),
         ),
       ),
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Row(
-                  children: [
-                    Icon(Icons.train, size: 18, color: AppColors.primary),
-                    SizedBox(width: 6),
-                    Text(
-                      'MRT KAJANG LINE',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.8,
-                        color: AppColors.primary,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  const Text(
-                    '25 min',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.onSurface,
-                    ),
-                  ),
-                  Text(
-                    'RM 2.40',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: AppColors.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
+    );
+  }
 
-          // Route timeline
-          Stack(
-            children: [
-              Positioned(
-                left: 9,
-                top: 10,
-                bottom: 10,
-                child: Container(
-                  width: 2,
-                  color: AppColors.outlineVariant,
+  Widget _buildInputBar() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        border: Border(top: BorderSide(color: AppColors.surfaceVariant)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Container(
+              decoration: BoxDecoration(
+                color: AppColors.surfaceContainer,
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: AppColors.surfaceVariant),
+              ),
+              child: TextField(
+                controller: _inputController,
+                focusNode: _focusNode,
+                maxLines: null,
+                textCapitalization: TextCapitalization.sentences,
+                onSubmitted: _send,
+                decoration: InputDecoration(
+                  hintText: 'Ask about routes, fares, stations...',
+                  hintStyle: GoogleFonts.inter(color: AppColors.onSurfaceVariant, fontSize: 14),
+                  border: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 ),
+                style: GoogleFonts.inter(fontSize: 14, color: AppColors.onSurface),
               ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 20,
-                        height: 20,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: AppColors.surface,
-                          border: Border.all(
-                            color: AppColors.primary,
-                            width: 2.5,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      const Expanded(
-                        child: Text(
-                          'Muzium Negara (Walk from KL Sentral)',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: AppColors.onSurface,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Padding(
-                    padding: const EdgeInsets.only(left: 30),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            const Icon(Icons.directions_walk, size: 14, color: AppColors.onSurfaceVariant),
-                            const SizedBox(width: 6),
-                            Text(
-                              'Walk 5 min',
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: AppColors.onSurfaceVariant,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            const Icon(Icons.train, size: 14, color: AppColors.tertiaryContainer),
-                            const SizedBox(width: 6),
-                            Text(
-                              '3 stops to Bukit Bintang',
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: AppColors.onSurfaceVariant,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Container(
-                        width: 20,
-                        height: 20,
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: AppColors.primary,
-                        ),
-                        child: const Center(
-                          child: CircleAvatar(
-                            radius: 4,
-                            backgroundColor: AppColors.onPrimary,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      const Text(
-                        'Bukit Bintang Station',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: AppColors.onSurface,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          GestureDetector(
+            onTap: () => _send(_inputController.text),
+            child: Container(
+              width: 44, height: 44,
+              decoration: BoxDecoration(
+                gradient: _isLoading ? null : const LinearGradient(colors: [AppColors.primary, AppColors.secondary], begin: Alignment.topLeft, end: Alignment.bottomRight),
+                color: _isLoading ? AppColors.surfaceVariant : null,
+                shape: BoxShape.circle,
               ),
-            ],
+              child: Icon(_isLoading ? Icons.hourglass_top : Icons.send_rounded, color: _isLoading ? AppColors.onSurfaceVariant : Colors.white, size: 20),
+            ),
           ),
         ],
       ),
@@ -359,57 +243,119 @@ class _RouteCard extends StatelessWidget {
   }
 }
 
-class _ChatInputBar extends StatelessWidget {
+class _Message {
+  final String role;
+  final String text;
+  final DateTime time;
+  _Message({required this.role, required this.text, required this.time});
+  bool get isUser => role == 'user';
+}
+
+class _MessageBubble extends StatelessWidget {
+  final _Message message;
+  const _MessageBubble({required this.message});
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.surface,
-        border: Border(
-          top: BorderSide(color: AppColors.outlineVariant),
-        ),
-      ),
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      child: SafeArea(
-        top: false,
-        child: Row(
-          children: [
-            Expanded(
-              child: Container(
-                height: 44,
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceContainer,
-                  borderRadius: BorderRadius.circular(22),
-                  border: Border.all(color: AppColors.outlineVariant),
-                ),
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: const Row(
-                  children: [
-                    Icon(Icons.smart_toy_outlined, size: 18, color: AppColors.primary),
-                    SizedBox(width: 8),
-                    Text(
-                      'Ask about your journey...',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: AppColors.outline,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+    final isUser = message.isUser;
+    return Padding(
+      padding: EdgeInsets.only(top: 6, bottom: 6, left: isUser ? 48 : 0, right: isUser ? 0 : 48),
+      child: Row(
+        mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (!isUser) ...[
+            Container(
+              width: 28, height: 28,
+              decoration: BoxDecoration(gradient: const LinearGradient(colors: [AppColors.primary, AppColors.secondary]), borderRadius: BorderRadius.circular(8)),
+              child: const Icon(Icons.smart_toy_rounded, color: Colors.white, size: 16),
             ),
             const SizedBox(width: 8),
-            Container(
-              width: 44,
-              height: 44,
-              decoration: const BoxDecoration(
-                color: AppColors.primary,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.mic_none, color: AppColors.onPrimary, size: 20),
-            ),
           ],
-        ),
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: isUser ? AppColors.primary : AppColors.surface,
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(16),
+                  topRight: const Radius.circular(16),
+                  bottomLeft: Radius.circular(isUser ? 16 : 4),
+                  bottomRight: Radius.circular(isUser ? 4 : 16),
+                ),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 6, offset: const Offset(0, 2))],
+              ),
+              child: Text(message.text, style: GoogleFonts.inter(fontSize: 14, height: 1.5, color: isUser ? Colors.white : AppColors.onSurface)),
+            ),
+          ),
+          if (isUser) const SizedBox(width: 8),
+        ],
+      ),
+    );
+  }
+}
+
+class _TypingIndicator extends StatefulWidget {
+  const _TypingIndicator();
+  @override
+  State<_TypingIndicator> createState() => _TypingIndicatorState();
+}
+
+class _TypingIndicatorState extends State<_TypingIndicator> with TickerProviderStateMixin {
+  late final List<AnimationController> _controllers;
+
+  @override
+  void initState() {
+    super.initState();
+    _controllers = List.generate(3, (i) => AnimationController(vsync: this, duration: const Duration(milliseconds: 500)));
+    for (var i = 0; i < 3; i++) {
+      Future.delayed(Duration(milliseconds: i * 160), () {
+        if (mounted) _controllers[i].repeat(reverse: true);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final c in _controllers) c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, bottom: 6),
+      child: Row(
+        children: [
+          Container(
+            width: 28, height: 28,
+            decoration: BoxDecoration(gradient: const LinearGradient(colors: [AppColors.primary, AppColors.secondary]), borderRadius: BorderRadius.circular(8)),
+            child: const Icon(Icons.smart_toy_rounded, color: Colors.white, size: 16),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: const BorderRadius.only(topLeft: Radius.circular(16), topRight: Radius.circular(16), bottomRight: Radius.circular(16), bottomLeft: Radius.circular(4)),
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 6, offset: const Offset(0, 2))],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: List.generate(3, (i) => AnimatedBuilder(
+                animation: _controllers[i],
+                builder: (_, __) => Container(
+                  width: 6, height: 6,
+                  margin: EdgeInsets.only(right: i < 2 ? 4 : 0),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.4 + 0.6 * _controllers[i].value),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              )),
+            ),
+          ),
+        ],
       ),
     );
   }
