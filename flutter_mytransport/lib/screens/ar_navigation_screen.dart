@@ -2,13 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../services/ar_service.dart';
 import '../theme/app_theme.dart';
+import 'camera_compass_ar_screen.dart';
 
-/// Pre-launch screen for ARCore Geospatial navigation.
+/// Pre-launch screen for AR navigation.
+///
+/// Detects ARCore availability and routes to the best AR mode:
+///   - ARCore Geospatial (native) — flagship devices with ARCore installed
+///   - Camera + Compass (Flutter)  — all other devices
 ///
 /// Accepts optional route arguments as a Map:
 ///   { 'latitude': double, 'longitude': double, 'stationName': String }
-///
-/// Falls back to a KL Sentral default so the screen is always usable.
 class ARNavigationScreen extends StatefulWidget {
   const ARNavigationScreen({super.key});
 
@@ -17,14 +20,13 @@ class ARNavigationScreen extends StatefulWidget {
 }
 
 class _ARNavigationScreenState extends State<ARNavigationScreen> {
-  // Destination — populated from route args or defaults
-  double _destLat  = 3.1348;   // KL Sentral
+  double _destLat  = 3.1348;
   double _destLng  = 101.6862;
   String _destName = 'KL Sentral';
 
-  bool _checkingSupport = true;
-  bool _isSupported     = false;
-  bool _isLaunching     = false;
+  ArCoreStatus _status    = ArCoreStatus.unknown;
+  bool _checking          = true;
+  bool _isLaunching       = false;
 
   @override
   void didChangeDependencies() {
@@ -33,29 +35,24 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     if (args is Map) {
       _destLat  = (args['latitude']    as num?)?.toDouble() ?? _destLat;
       _destLng  = (args['longitude']   as num?)?.toDouble() ?? _destLng;
-      _destName = (args['stationName'] as String?) ?? _destName;
+      _destName = (args['stationName'] as String?)          ?? _destName;
     }
-    _checkArSupport();
+    _checkStatus();
   }
 
-  Future<void> _checkArSupport() async {
-    final supported = await ArService.isArCoreAvailable();
-    if (mounted) {
-      setState(() {
-        _isSupported     = supported;
-        _checkingSupport = false;
-      });
-    }
+  Future<void> _checkStatus() async {
+    final status = await ArService.getArCoreStatus();
+    if (mounted) setState(() { _status = status; _checking = false; });
   }
 
-  Future<void> _launchAR() async {
+  // ── Launch handlers ──────────────────────────────────────────────────────
+
+  Future<void> _launchArCore() async {
     if (_isLaunching) return;
     setState(() => _isLaunching = true);
     try {
       await ArService.launchARNavigation(
-        latitude:    _destLat,
-        longitude:   _destLng,
-        stationName: _destName,
+        latitude: _destLat, longitude: _destLng, stationName: _destName,
       );
     } catch (e) {
       if (mounted) {
@@ -68,13 +65,28 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     }
   }
 
+  void _launchCameraCompass() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CameraCompassARScreen(
+          destLat: _destLat,
+          destLng: _destLng,
+          stationName: _destName,
+        ),
+      ),
+    );
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // ── Background gradient ──────────────────────────────────────────
+          // Background gradient
           Positioned.fill(
             child: DecoratedBox(
               decoration: BoxDecoration(
@@ -90,31 +102,60 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
               ),
             ),
           ),
-
-          // ── AR grid lines (decorative) ───────────────────────────────────
           Positioned.fill(child: CustomPaint(painter: _GridPainter())),
 
-          // ── Content ──────────────────────────────────────────────────────
+          // Content
           SafeArea(
             child: Column(
               children: [
                 _TopBar(onClose: () => Navigator.pop(context)),
                 const Spacer(),
-                _ARIcon(isSupported: _isSupported, checking: _checkingSupport),
-                const SizedBox(height: 32),
+                _ModeIcon(status: _status, checking: _checking),
+                const SizedBox(height: 28),
                 _DestinationCard(name: _destName, lat: _destLat, lng: _destLng),
-                const SizedBox(height: 40),
-                if (_checkingSupport)
-                  _StatusChip(label: 'Checking device compatibility…', isLoading: true)
-                else if (_isSupported)
-                  _LaunchButton(
-                    isLaunching: _isLaunching,
-                    onTap: _launchAR,
+                const SizedBox(height: 32),
+
+                // ── Action area ────────────────────────────────────────
+                if (_checking)
+                  _StatusChip(label: 'Checking device…', loading: true)
+
+                else if (_status == ArCoreStatus.supportedInstalled)
+                  _ActionButton(
+                    icon: Icons.view_in_ar_rounded,
+                    label: 'Start AR Navigation',
+                    sublabel: 'ARCore Geospatial',
+                    color: const Color(0xFF4285F4),
+                    isLoading: _isLaunching,
+                    onTap: _launchArCore,
                   )
-                else
-                  const _UnsupportedCard(),
+
+                else if (_status == ArCoreStatus.supportedNotInstalled ||
+                         _status == ArCoreStatus.supportedApkTooOld) ...[
+                  _InstallBanner(apkTooOld: _status == ArCoreStatus.supportedApkTooOld),
+                  const SizedBox(height: 16),
+                  _ActionButton(
+                    icon: Icons.camera_alt_rounded,
+                    label: 'Use Camera Mode Instead',
+                    sublabel: 'Works without ARCore',
+                    color: const Color(0xFF34A853),
+                    onTap: _launchCameraCompass,
+                  ),
+                ]
+
+                else ...[
+                  _UnsupportedBanner(),
+                  const SizedBox(height: 16),
+                  _ActionButton(
+                    icon: Icons.camera_alt_rounded,
+                    label: 'Start AR Navigation',
+                    sublabel: 'Camera + Compass mode',
+                    color: const Color(0xFF34A853),
+                    onTap: _launchCameraCompass,
+                  ),
+                ],
+
                 const Spacer(flex: 2),
-                _InfoFooter(isSupported: _isSupported),
+                if (!_checking) _InfoFooter(status: _status),
                 const SizedBox(height: 24),
               ],
             ),
@@ -145,9 +186,7 @@ class _TopBar extends StatelessWidget {
             child: Text(
               'AR Navigation',
               style: GoogleFonts.inter(
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-                color: Colors.white,
+                fontSize: 18, fontWeight: FontWeight.w700, color: Colors.white,
               ),
               textAlign: TextAlign.center,
             ),
@@ -159,36 +198,34 @@ class _TopBar extends StatelessWidget {
   }
 }
 
-class _ARIcon extends StatelessWidget {
-  final bool isSupported;
+class _ModeIcon extends StatelessWidget {
+  final ArCoreStatus status;
   final bool checking;
-  const _ARIcon({required this.isSupported, required this.checking});
+  const _ModeIcon({required this.status, required this.checking});
 
   @override
   Widget build(BuildContext context) {
-    final color = checking
-        ? Colors.white38
-        : isSupported
-            ? const Color(0xFF4285F4)
-            : Colors.red.shade400;
+    final isGood = status == ArCoreStatus.supportedInstalled;
+    final isWarn = status == ArCoreStatus.supportedNotInstalled ||
+                   status == ArCoreStatus.supportedApkTooOld;
+    final color = checking ? Colors.white38
+        : isGood ? const Color(0xFF4285F4)
+        : isWarn ? Colors.amber
+        : const Color(0xFF34A853);
+
+    final icon = checking    ? Icons.radar
+        : isGood             ? Icons.view_in_ar_rounded
+        : isWarn             ? Icons.system_update_rounded
+        : Icons.camera_alt_rounded;
 
     return Container(
-      width: 96,
-      height: 96,
+      width: 88, height: 88,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(color: color.withOpacity(0.6), width: 2),
-        color: color.withOpacity(0.12),
+        border: Border.all(color: color.withOpacity(0.5), width: 2),
+        color: color.withOpacity(0.1),
       ),
-      child: Icon(
-        checking
-            ? Icons.radar
-            : isSupported
-                ? Icons.view_in_ar_rounded
-                : Icons.warning_amber_rounded,
-        size: 48,
-        color: color,
-      ),
+      child: Icon(icon, size: 44, color: color),
     );
   }
 }
@@ -202,46 +239,37 @@ class _DestinationCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 32),
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.12)),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withOpacity(0.1)),
       ),
       child: Row(
         children: [
           Container(
-            width: 44,
-            height: 44,
+            width: 42, height: 42,
             decoration: BoxDecoration(
-              color: const Color(0xFF4285F4).withOpacity(0.2),
+              color: const Color(0xFF4285F4).withOpacity(0.18),
               shape: BoxShape.circle,
             ),
-            child: const Icon(Icons.train_rounded, color: Color(0xFF4285F4), size: 22),
+            child: const Icon(Icons.train_rounded, color: Color(0xFF4285F4), size: 20),
           ),
-          const SizedBox(width: 16),
+          const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Destination',
-                  style: GoogleFonts.inter(fontSize: 11, color: Colors.white38),
-                ),
+                Text('Destination',
+                    style: GoogleFonts.inter(fontSize: 11, color: Colors.white38)),
                 const SizedBox(height: 2),
-                Text(
-                  name,
-                  style: GoogleFonts.inter(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                  ),
-                ),
+                Text(name,
+                    style: GoogleFonts.inter(
+                      fontSize: 15, fontWeight: FontWeight.w600, color: Colors.white,
+                    )),
                 const SizedBox(height: 2),
-                Text(
-                  '${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}',
-                  style: GoogleFonts.inter(fontSize: 11, color: Colors.white38),
-                ),
+                Text('${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}',
+                    style: GoogleFonts.inter(fontSize: 11, color: Colors.white30)),
               ],
             ),
           ),
@@ -251,54 +279,60 @@ class _DestinationCard extends StatelessWidget {
   }
 }
 
-class _LaunchButton extends StatelessWidget {
-  final bool isLaunching;
+class _ActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String sublabel;
+  final Color color;
   final VoidCallback onTap;
-  const _LaunchButton({required this.isLaunching, required this.onTap});
+  final bool isLoading;
+  const _ActionButton({
+    required this.icon,
+    required this.label,
+    required this.sublabel,
+    required this.color,
+    required this.onTap,
+    this.isLoading = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: isLaunching ? null : onTap,
+      onTap: isLoading ? null : onTap,
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 40),
-        height: 56,
+        height: 64,
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            colors: [Color(0xFF1A73E8), Color(0xFF4285F4)],
+          gradient: LinearGradient(
+            colors: [color.withOpacity(0.85), color],
           ),
-          borderRadius: BorderRadius.circular(28),
+          borderRadius: BorderRadius.circular(32),
           boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF4285F4).withOpacity(0.4),
-              blurRadius: 20,
-              offset: const Offset(0, 8),
-            ),
+            BoxShadow(color: color.withOpacity(0.35), blurRadius: 18, offset: const Offset(0, 8)),
           ],
         ),
         child: Center(
-          child: isLaunching
+          child: isLoading
               ? const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2.5,
-                  ),
+                  width: 22, height: 22,
+                  child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
                 )
-              : Row(
+              : Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.view_in_ar_rounded, color: Colors.white, size: 20),
-                    const SizedBox(width: 10),
-                    Text(
-                      'Start AR Navigation',
-                      style: GoogleFonts.inter(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white,
-                      ),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(icon, color: Colors.white, size: 20),
+                        const SizedBox(width: 8),
+                        Text(label,
+                            style: GoogleFonts.inter(
+                              fontSize: 15, fontWeight: FontWeight.w600, color: Colors.white,
+                            )),
+                      ],
                     ),
+                    Text(sublabel,
+                        style: GoogleFonts.inter(fontSize: 11, color: Colors.white70)),
                   ],
                 ),
         ),
@@ -309,32 +343,60 @@ class _LaunchButton extends StatelessWidget {
 
 class _StatusChip extends StatelessWidget {
   final String label;
-  final bool isLoading;
-  const _StatusChip({required this.label, this.isLoading = false});
+  final bool loading;
+  const _StatusChip({required this.label, this.loading = false});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
+        color: Colors.white.withOpacity(0.07),
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: Colors.white24),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (isLoading) ...[
+          if (loading) ...[
             const SizedBox(
-              width: 14,
-              height: 14,
+              width: 13, height: 13,
               child: CircularProgressIndicator(color: Colors.white54, strokeWidth: 2),
             ),
             const SizedBox(width: 10),
           ],
-          Text(
-            label,
-            style: GoogleFonts.inter(fontSize: 13, color: Colors.white60),
+          Text(label, style: GoogleFonts.inter(fontSize: 13, color: Colors.white60)),
+        ],
+      ),
+    );
+  }
+}
+
+class _InstallBanner extends StatelessWidget {
+  final bool apkTooOld;
+  const _InstallBanner({required this.apkTooOld});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 32),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.amber.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.amber.withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.system_update_rounded, color: Colors.amber.shade400, size: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              apkTooOld
+                  ? 'ARCore needs updating. Update "Google Play Services for AR" in the Play Store.'
+                  : 'ARCore is not installed. Install "Google Play Services for AR" from the Play Store.',
+              style: GoogleFonts.inter(fontSize: 12, color: Colors.amber.shade200),
+            ),
           ),
         ],
       ),
@@ -342,36 +404,26 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
-class _UnsupportedCard extends StatelessWidget {
-  const _UnsupportedCard();
-
+class _UnsupportedBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 40),
-      padding: const EdgeInsets.all(20),
+      margin: const EdgeInsets.symmetric(horizontal: 32),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.red.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.red.withOpacity(0.3)),
+        color: const Color(0xFF34A853).withOpacity(0.1),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF34A853).withOpacity(0.3)),
       ),
-      child: Column(
+      child: Row(
         children: [
-          Icon(Icons.warning_amber_rounded, color: Colors.red.shade400, size: 28),
-          const SizedBox(height: 10),
-          Text(
-            'ARCore Not Supported',
-            style: GoogleFonts.inter(
-              fontSize: 15,
-              fontWeight: FontWeight.w600,
-              color: Colors.red.shade300,
+          const Icon(Icons.camera_alt_rounded, color: Color(0xFF34A853), size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'This device does not support ARCore. Using Camera + Compass mode instead — works fully offline.',
+              style: GoogleFonts.inter(fontSize: 12, color: Colors.white60),
             ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'This device does not support ARCore, or Google Play Services for AR is not installed.',
-            style: GoogleFonts.inter(fontSize: 12, color: Colors.white54),
-            textAlign: TextAlign.center,
           ),
         ],
       ),
@@ -380,64 +432,59 @@ class _UnsupportedCard extends StatelessWidget {
 }
 
 class _InfoFooter extends StatelessWidget {
-  final bool isSupported;
-  const _InfoFooter({required this.isSupported});
+  final ArCoreStatus status;
+  const _InfoFooter({required this.status});
 
   @override
   Widget build(BuildContext context) {
-    if (!isSupported) return const SizedBox.shrink();
+    final rows = status == ArCoreStatus.supportedInstalled
+        ? [
+            (Icons.gps_fixed, 'Requires strong GPS signal outdoors'),
+            (Icons.streetview, 'Works best in Google Street View areas'),
+            (Icons.wifi, 'Active internet connection needed'),
+          ]
+        : [
+            (Icons.gps_fixed, 'Requires GPS — go outdoors for best results'),
+            (Icons.explore, 'Uses device compass for direction'),
+            (Icons.camera_alt, 'Camera permission needed'),
+          ];
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 40),
       child: Column(
-        children: [
-          _InfoRow(Icons.gps_fixed, 'Requires strong GPS signal outdoors'),
-          const SizedBox(height: 6),
-          _InfoRow(Icons.streetview, 'Works best in Google Street View areas'),
-          const SizedBox(height: 6),
-          _InfoRow(Icons.wifi, 'Active internet connection needed'),
-        ],
+        children: rows
+            .map((r) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: Row(
+                    children: [
+                      Icon(r.$1, size: 13, color: Colors.white24),
+                      const SizedBox(width: 8),
+                      Text(r.$2,
+                          style: GoogleFonts.inter(
+                              fontSize: 11, color: Colors.white24)),
+                    ],
+                  ),
+                ))
+            .toList(),
       ),
     );
   }
 }
 
-class _InfoRow extends StatelessWidget {
-  final IconData icon;
-  final String text;
-  const _InfoRow(this.icon, this.text);
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, size: 14, color: Colors.white30),
-        const SizedBox(width: 8),
-        Text(
-          text,
-          style: GoogleFonts.inter(fontSize: 12, color: Colors.white30),
-        ),
-      ],
-    );
-  }
-}
-
-// ── Decorative grid painter ───────────────────────────────────────────────────
+// ── Decorative grid ───────────────────────────────────────────────────────────
 
 class _GridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withOpacity(0.03)
-      ..strokeWidth = 1;
-    const step = 40.0;
-    for (double x = 0; x < size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    final p = Paint()..color = Colors.white.withOpacity(0.03)..strokeWidth = 1;
+    for (double x = 0; x < size.width; x += 40) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), p);
     }
-    for (double y = 0; y < size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+    for (double y = 0; y < size.height; y += 40) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), p);
     }
   }
 
   @override
-  bool shouldRepaint(_GridPainter old) => false;
+  bool shouldRepaint(_GridPainter _) => false;
 }

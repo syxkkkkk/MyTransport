@@ -20,12 +20,9 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
 
                     "isArCoreAvailable" -> {
+                        // Return the enum name so Flutter can handle each case
                         val avail = ArCoreApk.getInstance().checkAvailability(this)
-                        result.success(
-                            avail == ArCoreApk.Availability.SUPPORTED_INSTALLED ||
-                            avail == ArCoreApk.Availability.SUPPORTED_APK_TOO_OLD ||
-                            avail == ArCoreApk.Availability.SUPPORTED_NOT_INSTALLED
-                        )
+                        result.success(avail.name)
                     }
 
                     "launchARNavigation" -> {
