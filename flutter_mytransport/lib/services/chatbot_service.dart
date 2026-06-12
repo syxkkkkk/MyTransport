@@ -1,13 +1,13 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import '../config/api_keys.dart';
 
 // ---------------------------------------------------------------------------
 // Calls Google Gemini directly — no backend required.
 // ---------------------------------------------------------------------------
 
-const _geminiApiKey = 'AIzaSyASdx8ZT8yfZMKC4fIm2McH9g8nT4xH6yk';
 const _geminiUrl =
-    'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+    'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 const _systemPrompt = '''
 You are MyTransport AI — a friendly, knowledgeable transit assistant for Malaysia.
@@ -68,7 +68,7 @@ class ChatbotService {
 
     final response = await http
         .post(
-          Uri.parse('$_geminiUrl?key=$_geminiApiKey'),
+          Uri.parse('$_geminiUrl?key=$geminiApiKey'),
           headers: {'Content-Type': 'application/json'},
           body: body,
         )
