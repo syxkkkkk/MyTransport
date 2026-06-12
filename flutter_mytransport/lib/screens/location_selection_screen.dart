@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../theme/app_theme.dart';
@@ -12,17 +11,18 @@ class LocationSelectionScreen extends StatefulWidget {
   const LocationSelectionScreen({super.key});
 
   @override
-  State<LocationSelectionScreen> createState() => _LocationSelectionScreenState();
+  State<LocationSelectionScreen> createState() =>
+      _LocationSelectionScreenState();
 }
 
 class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
-  final _mapController = MapController();
-  final _transitService = TransitService();
+  final Completer<GoogleMapController> _mapCompleter = Completer();
 
   // Default center: KL City Centre
   LatLng _center = const LatLng(3.1478, 101.6953);
   LatLng? _userLocation;
 
+  final _transitService = TransitService();
   List<NearbyStation> _stations = [];
   NearbyStation? _selectedStation;
   bool _loadingLocation = true;
@@ -50,7 +50,8 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
       // 1 — Check location service
       if (!await Geolocator.isLocationServiceEnabled()) {
         setState(() {
-          _locationError = 'Location services are disabled. Enable GPS in Settings.';
+          _locationError =
+              'Location services are disabled. Enable GPS in Settings.';
           _loadingLocation = false;
         });
         _fetchNearbyStations(_center);
@@ -83,26 +84,28 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
           _center = loc;
           _locationAccuracy = lastKnown.accuracy;
         });
-        _mapController.move(loc, 14.5);
+        _moveCamera(loc, 14.5);
         _fetchNearbyStations(loc);
       }
 
       // 4 — Get fresh high-accuracy GPS fix (15 s timeout)
       final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+        locationSettings:
+            const LocationSettings(accuracy: LocationAccuracy.high),
       ).timeout(
         const Duration(seconds: 15),
-        onTimeout: () => throw TimeoutException('GPS took too long. Showing last known position.'),
+        onTimeout: () => throw TimeoutException(
+            'GPS took too long. Showing last known position.'),
       );
 
       if (!mounted) return;
       final loc = LatLng(position.latitude, position.longitude);
 
-      // Only refetch stations if we moved more than 50 m from the last-known fix
+      // Only refetch stations if moved more than 50 m
       final moved = lastKnown == null ||
-          Geolocator.distanceBetween(
-              lastKnown.latitude, lastKnown.longitude,
-              position.latitude, position.longitude) > 50;
+          Geolocator.distanceBetween(lastKnown.latitude, lastKnown.longitude,
+                  position.latitude, position.longitude) >
+              50;
 
       setState(() {
         _userLocation = loc;
@@ -111,16 +114,15 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
         _locationAccuracy = position.accuracy;
         _locationError = null;
       });
-      _mapController.move(loc, 14.5);
+      _moveCamera(loc, 14.5);
       if (moved) _fetchNearbyStations(loc);
-
     } on TimeoutException catch (e) {
       if (mounted) {
         setState(() {
           _loadingLocation = false;
-          // Only show error if we have no position at all
           if (_userLocation == null) {
-            _locationError = e.message ?? 'GPS timeout. Move outdoors and try again.';
+            _locationError =
+                e.message ?? 'GPS timeout. Move outdoors and try again.';
           }
         });
         if (_userLocation == null) _fetchNearbyStations(_center);
@@ -136,6 +138,15 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
         if (_userLocation == null) _fetchNearbyStations(_center);
       }
     }
+  }
+
+  Future<void> _moveCamera(LatLng target, double zoom) async {
+    final controller = await _mapCompleter.future;
+    controller.animateCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(target: target, zoom: zoom),
+      ),
+    );
   }
 
   Future<void> _fetchNearbyStations(LatLng loc) async {
@@ -169,9 +180,16 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
     }
   }
 
+  double _colorToHue(String hex) {
+    final hsv = HSVColor.fromColor(_parseColor(hex));
+    return hsv.hue;
+  }
+
   List<NearbyStation> get _filteredStations {
     if (_activeLines.isEmpty) return _stations;
-    return _stations.where((s) => s.lines.any((l) => _activeLines.contains(l.line.code))).toList();
+    return _stations
+        .where((s) => s.lines.any((l) => _activeLines.contains(l.line.code)))
+        .toList();
   }
 
   Set<String> get _allLineCodes {
@@ -194,99 +212,56 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
     return map;
   }
 
+  Set<Marker> _buildMarkers() {
+    return _filteredStations.map((station) {
+      final isSelected = _selectedStation?.id == station.id;
+      return Marker(
+        markerId: MarkerId(station.id),
+        position: LatLng(station.latitude, station.longitude),
+        icon: BitmapDescriptor.defaultMarkerWithHue(
+          _colorToHue(station.primaryColor),
+        ),
+        zIndexInt: isSelected ? 1 : 0,
+        onTap: () {
+          setState(() => _selectedStation = station);
+          _moveCamera(LatLng(station.latitude, station.longitude), 15.5);
+        },
+        infoWindow: InfoWindow(
+          title: station.name,
+          snippet: station.code,
+        ),
+      );
+    }).toSet();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: Stack(
         children: [
-          // Map
-          FlutterMap(
-            mapController: _mapController,
-            options: MapOptions(
-              initialCenter: _center,
-              initialZoom: 14.0,
-              onTap: (_, __) => setState(() => _selectedStation = null),
+          // ── Google Map ──────────────────────────────────────────────────
+          GoogleMap(
+            initialCameraPosition: CameraPosition(
+              target: _center,
+              zoom: 14.0,
             ),
-            children: [
-              TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.mytransport.app',
-              ),
-              // Station markers
-              MarkerLayer(
-                markers: [
-                  // User location blue dot
-                  if (_userLocation != null)
-                    Marker(
-                      point: _userLocation!,
-                      width: 28,
-                      height: 28,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          // Accuracy ring
-                          Container(
-                            decoration: BoxDecoration(
-                              color: Colors.blue.withOpacity(0.15),
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.blue.withOpacity(0.3), width: 1),
-                            ),
-                          ),
-                          // Blue dot
-                          Container(
-                            width: 16,
-                            height: 16,
-                            decoration: BoxDecoration(
-                              color: Colors.blue,
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 3),
-                              boxShadow: [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 8, spreadRadius: 2)],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  // Station markers
-                  ..._filteredStations.map((station) {
-                    final color = _parseColor(station.primaryColor);
-                    final isSelected = _selectedStation?.id == station.id;
-                    return Marker(
-                      point: LatLng(station.latitude, station.longitude),
-                      width: isSelected ? 44 : 36,
-                      height: isSelected ? 54 : 44,
-                      child: GestureDetector(
-                        onTap: () => setState(() => _selectedStation = station),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              width: isSelected ? 40 : 32,
-                              height: isSelected ? 40 : 32,
-                              decoration: BoxDecoration(
-                                color: color,
-                                shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white, width: isSelected ? 3 : 2),
-                                boxShadow: [BoxShadow(color: color.withOpacity(0.5), blurRadius: 6, offset: const Offset(0, 2))],
-                              ),
-                              child: const Icon(Icons.train, color: Colors.white, size: 14),
-                            ),
-                            Container(
-                              width: 2,
-                              height: isSelected ? 10 : 8,
-                              color: color,
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  }),
-                ],
-              ),
-            ],
+            onMapCreated: (controller) {
+              if (!_mapCompleter.isCompleted) {
+                _mapCompleter.complete(controller);
+              }
+            },
+            myLocationEnabled: true,
+            myLocationButtonEnabled: false,
+            zoomControlsEnabled: false,
+            compassEnabled: true,
+            mapToolbarEnabled: false,
+            markers: _buildMarkers(),
+            mapType: MapType.normal,
+            onTap: (_) => setState(() => _selectedStation = null),
           ),
 
-          // Top bar
+          // ── Top bar ─────────────────────────────────────────────────────
           Positioned(
             top: 0,
             left: 0,
@@ -294,7 +269,7 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
             child: _buildTopBar(context),
           ),
 
-          // Loading indicator
+          // ── Loading chip ────────────────────────────────────────────────
           if (_loadingLocation || _loadingStations)
             Positioned(
               top: 110,
@@ -302,16 +277,24 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
               right: 0,
               child: Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   decoration: BoxDecoration(
                     color: AppColors.surface,
                     borderRadius: BorderRadius.circular(20),
-                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 8)],
+                    boxShadow: [
+                      BoxShadow(
+                          color: Colors.black.withOpacity(0.1), blurRadius: 8)
+                    ],
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+                      const SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
                       const SizedBox(width: 8),
                       Text(
                         _loadingLocation
@@ -319,7 +302,8 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
                             : _locationAccuracy != null
                                 ? 'Loading stations… (GPS ±${_locationAccuracy!.toStringAsFixed(0)}m)'
                                 : 'Loading nearby stations…',
-                        style: GoogleFonts.inter(fontSize: 12, color: AppColors.onSurface),
+                        style: GoogleFonts.inter(
+                            fontSize: 12, color: AppColors.onSurface),
                       ),
                     ],
                   ),
@@ -327,14 +311,15 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
               ),
             ),
 
-          // Error snack-style banner
+          // ── Error banner ────────────────────────────────────────────────
           if (_locationError != null)
             Positioned(
               top: 110,
               left: 16,
               right: 16,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                 decoration: BoxDecoration(
                   color: Colors.amber.shade100,
                   borderRadius: BorderRadius.circular(10),
@@ -342,17 +327,23 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.warning_amber_rounded, size: 16, color: Colors.amber),
+                    const Icon(Icons.warning_amber_rounded,
+                        size: 16, color: Colors.amber),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text(_locationError!, style: GoogleFonts.inter(fontSize: 12, color: Colors.amber.shade900)),
+                      child: Text(
+                        _locationError!,
+                        style: GoogleFonts.inter(
+                            fontSize: 12,
+                            color: Colors.amber.shade900),
+                      ),
                     ),
                   ],
                 ),
               ),
             ),
 
-          // My location FAB
+          // ── My-location FAB ─────────────────────────────────────────────
           Positioned(
             right: 16,
             bottom: _selectedStation != null ? 230 : 180,
@@ -360,11 +351,12 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
               heroTag: 'locate',
               onPressed: _initLocation,
               backgroundColor: AppColors.surface,
-              child: const Icon(Icons.my_location, color: AppColors.primary, size: 20),
+              child: const Icon(Icons.my_location,
+                  color: AppColors.primary, size: 20),
             ),
           ),
 
-          // Bottom panel
+          // ── Bottom panel ────────────────────────────────────────────────
           Positioned(
             bottom: 0,
             left: 0,
@@ -373,9 +365,12 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
           ),
         ],
       ),
-      bottomNavigationBar: const BottomNavBar(currentTab: NavTab.map),
+      bottomNavigationBar:
+          const BottomNavBar(currentTab: NavTab.map),
     );
   }
+
+  // ── Top bar ───────────────────────────────────────────────────────────────
 
   Widget _buildTopBar(BuildContext context) {
     return Container(
@@ -396,26 +391,37 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
               color: AppColors.surface,
               borderRadius: BorderRadius.circular(14),
               border: Border.all(color: AppColors.surfaceVariant),
-              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 8, offset: const Offset(0, 2))],
+              boxShadow: [
+                BoxShadow(
+                    color: Colors.black.withOpacity(0.08),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2))
+              ],
             ),
             child: Row(
               children: [
                 IconButton(
-                  icon: const Icon(Icons.arrow_back, color: AppColors.onSurfaceVariant, size: 20),
+                  icon: const Icon(Icons.arrow_back,
+                      color: AppColors.onSurfaceVariant, size: 20),
                   onPressed: () => Navigator.pop(context),
                   padding: EdgeInsets.zero,
                 ),
-                const Icon(Icons.search, color: AppColors.onSurfaceVariant, size: 18),
+                const Icon(Icons.search,
+                    color: AppColors.onSurfaceVariant, size: 18),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     'Nearby transit stations',
-                    style: GoogleFonts.inter(fontSize: 14, color: AppColors.onSurfaceVariant),
+                    style: GoogleFonts.inter(
+                        fontSize: 14, color: AppColors.onSurfaceVariant),
                   ),
                 ),
                 Text(
                   '${_filteredStations.length} found',
-                  style: GoogleFonts.inter(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w600),
+                  style: GoogleFonts.inter(
+                      fontSize: 12,
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(width: 12),
               ],
@@ -430,7 +436,8 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: _allLineCodes.map((code) {
-                  final color = _parseColor(_lineColors[code] ?? '#6B7280');
+                  final color =
+                      _parseColor(_lineColors[code] ?? '#6B7280');
                   final active = _activeLines.contains(code);
                   return Padding(
                     padding: const EdgeInsets.only(right: 6),
@@ -443,19 +450,28 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
                         }
                       }),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
                         decoration: BoxDecoration(
                           color: active ? color : AppColors.surface,
                           borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: active ? color : AppColors.surfaceVariant),
-                          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 4)],
+                          border: Border.all(
+                              color: active
+                                  ? color
+                                  : AppColors.surfaceVariant),
+                          boxShadow: [
+                            BoxShadow(
+                                color: Colors.black.withOpacity(0.06),
+                                blurRadius: 4)
+                          ],
                         ),
                         child: Text(
                           code,
                           style: GoogleFonts.inter(
                             fontSize: 11,
                             fontWeight: FontWeight.w700,
-                            color: active ? Colors.white : AppColors.onSurface,
+                            color:
+                                active ? Colors.white : AppColors.onSurface,
                           ),
                         ),
                       ),
@@ -470,13 +486,19 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
     );
   }
 
+  // ── Bottom panel ──────────────────────────────────────────────────────────
+
   Widget _buildBottomPanel(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Colors.transparent, AppColors.surface.withOpacity(0.95), AppColors.surface],
+          colors: [
+            Colors.transparent,
+            AppColors.surface.withOpacity(0.95),
+            AppColors.surface
+          ],
           stops: const [0.0, 0.2, 1.0],
         ),
       ),
@@ -484,7 +506,7 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Station cards horizontal scroll
+          // Station cards
           if (_filteredStations.isNotEmpty) ...[
             SizedBox(
               height: 90,
@@ -499,7 +521,8 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
                   return GestureDetector(
                     onTap: () {
                       setState(() => _selectedStation = s);
-                      _mapController.move(LatLng(s.latitude, s.longitude), 15);
+                      _moveCamera(
+                          LatLng(s.latitude, s.longitude), 15.5);
                     },
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 200),
@@ -507,10 +530,20 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
                       margin: const EdgeInsets.only(right: 10),
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: isSelected ? color.withOpacity(0.1) : AppColors.surface,
+                        color: isSelected
+                            ? color.withOpacity(0.1)
+                            : AppColors.surface,
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: isSelected ? color : AppColors.surfaceVariant, width: isSelected ? 2 : 1),
-                        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 6)],
+                        border: Border.all(
+                            color: isSelected
+                                ? color
+                                : AppColors.surfaceVariant,
+                            width: isSelected ? 2 : 1),
+                        boxShadow: [
+                          BoxShadow(
+                              color: Colors.black.withOpacity(0.06),
+                              blurRadius: 6)
+                        ],
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -518,34 +551,50 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
                           Row(
                             children: [
                               Container(
-                                width: 10, height: 10,
-                                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+                                width: 10,
+                                height: 10,
+                                decoration: BoxDecoration(
+                                    color: color,
+                                    shape: BoxShape.circle),
                               ),
                               const SizedBox(width: 6),
                               Expanded(
                                 child: Text(
-                                  s.lines.isNotEmpty ? s.lines.first.line.code : '—',
-                                  style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: color),
+                                  s.lines.isNotEmpty
+                                      ? s.lines.first.line.code
+                                      : '—',
+                                  style: GoogleFonts.inter(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                      color: color),
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
                               Text(
                                 '${s.distanceKm.toStringAsFixed(1)}km',
-                                style: GoogleFonts.inter(fontSize: 10, color: AppColors.onSurfaceVariant),
+                                style: GoogleFonts.inter(
+                                    fontSize: 10,
+                                    color:
+                                        AppColors.onSurfaceVariant),
                               ),
                             ],
                           ),
                           const SizedBox(height: 4),
                           Text(
                             s.name,
-                            style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.onSurface),
+                            style: GoogleFonts.inter(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.onSurface),
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                           ),
                           const SizedBox(height: 2),
                           Text(
                             s.code,
-                            style: GoogleFonts.inter(fontSize: 11, color: AppColors.onSurfaceVariant),
+                            style: GoogleFonts.inter(
+                                fontSize: 11,
+                                color: AppColors.onSurfaceVariant),
                           ),
                         ],
                       ),
@@ -557,54 +606,85 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
             const SizedBox(height: 10),
           ],
 
-          // Selected station detail + confirm button
+          // Selected station detail + confirm
           if (_selectedStation != null) ...[
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Column(
                 children: [
-                  // Detail row
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(
                       color: AppColors.surface,
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppColors.surfaceVariant),
+                      border:
+                          Border.all(color: AppColors.surfaceVariant),
                     ),
                     child: Row(
                       children: [
                         Container(
-                          width: 40, height: 40,
+                          width: 40,
+                          height: 40,
                           decoration: BoxDecoration(
-                            color: _parseColor(_selectedStation!.primaryColor).withOpacity(0.15),
+                            color: _parseColor(
+                                    _selectedStation!.primaryColor)
+                                .withOpacity(0.15),
                             shape: BoxShape.circle,
                           ),
-                          child: Icon(Icons.train, color: _parseColor(_selectedStation!.primaryColor), size: 20),
+                          child: Icon(
+                            Icons.train,
+                            color: _parseColor(
+                                _selectedStation!.primaryColor),
+                            size: 20,
+                          ),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                            crossAxisAlignment:
+                                CrossAxisAlignment.start,
                             children: [
                               Text(
                                 _selectedStation!.name,
-                                style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.onSurface),
+                                style: GoogleFonts.inter(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.onSurface),
                               ),
                               const SizedBox(height: 2),
                               Row(
                                 children: [
-                                  ..._selectedStation!.lines.map((l) => Container(
-                                    margin: const EdgeInsets.only(right: 4),
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: _parseColor(l.line.color),
-                                      borderRadius: BorderRadius.circular(4),
+                                  ..._selectedStation!.lines.map(
+                                    (l) => Container(
+                                      margin: const EdgeInsets.only(
+                                          right: 4),
+                                      padding:
+                                          const EdgeInsets.symmetric(
+                                              horizontal: 6,
+                                              vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: _parseColor(
+                                            l.line.color),
+                                        borderRadius:
+                                            BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        l.line.code,
+                                        style: GoogleFonts.inter(
+                                            fontSize: 9,
+                                            fontWeight:
+                                                FontWeight.w800,
+                                            color: Colors.white),
+                                      ),
                                     ),
-                                    child: Text(l.line.code, style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w800, color: Colors.white)),
-                                  )),
+                                  ),
                                   Text(
                                     '${_selectedStation!.distanceKm.toStringAsFixed(2)} km away',
-                                    style: GoogleFonts.inter(fontSize: 11, color: AppColors.onSurfaceVariant),
+                                    style: GoogleFonts.inter(
+                                        fontSize: 11,
+                                        color: AppColors
+                                            .onSurfaceVariant),
                                   ),
                                 ],
                               ),
@@ -615,22 +695,24 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
                     ),
                   ),
                   const SizedBox(height: 10),
-
-                  // Confirm button
                   SizedBox(
                     width: double.infinity,
                     height: 50,
                     child: ElevatedButton(
-                      onPressed: () => Navigator.pushNamed(context, '/route-details'),
+                      onPressed: () => Navigator.pushNamed(
+                          context, '/route-details'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.primary,
                         foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
                         elevation: 0,
                       ),
                       child: Text(
                         'Get Route from ${_selectedStation!.name}',
-                        style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w700),
+                        style: GoogleFonts.inter(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
@@ -650,12 +732,15 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.info_outline, color: AppColors.onSurfaceVariant),
+                    const Icon(Icons.info_outline,
+                        color: AppColors.onSurfaceVariant),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
                         'No transit stations found within 3km.\nTry moving the map to a different area.',
-                        style: GoogleFonts.inter(fontSize: 13, color: AppColors.onSurfaceVariant),
+                        style: GoogleFonts.inter(
+                            fontSize: 13,
+                            color: AppColors.onSurfaceVariant),
                       ),
                     ),
                   ],
