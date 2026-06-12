@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+    id("com.google.android.libraries.mapsplatform.secrets-gradle-plugin")
 }
 
 android {
@@ -40,6 +41,17 @@ kotlin {
     }
 }
 
+dependencies {
+    implementation("com.google.ar:core:1.44.0")
+}
+
 flutter {
     source = "../.."
+}
+
+secrets {
+    // local.properties is the default source — already git-ignored
+    propertiesFileName = "local.properties"
+    // Fallback file committed to source control with placeholder values
+    defaultPropertiesFileName = "local.defaults.properties"
 }

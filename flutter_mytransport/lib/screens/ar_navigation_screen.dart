@@ -1,7 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
+import 'package:google_fonts/google_fonts.dart';
+import '../services/ar_service.dart';
 import '../theme/app_theme.dart';
 
+/// Pre-launch screen for ARCore Geospatial navigation.
+///
+/// Accepts optional route arguments as a Map:
+///   { 'latitude': double, 'longitude': double, 'stationName': String }
+///
+/// Falls back to a KL Sentral default so the screen is always usable.
 class ARNavigationScreen extends StatefulWidget {
   const ARNavigationScreen({super.key});
 
@@ -9,35 +16,56 @@ class ARNavigationScreen extends StatefulWidget {
   State<ARNavigationScreen> createState() => _ARNavigationScreenState();
 }
 
-class _ARNavigationScreenState extends State<ARNavigationScreen>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _arrowCtrl;
-  late final Animation<double> _arrowOffset;
-  late final Animation<double> _arrowOpacity;
-  static const double _progressValue = 0.25;
+class _ARNavigationScreenState extends State<ARNavigationScreen> {
+  // Destination — populated from route args or defaults
+  double _destLat  = 3.1348;   // KL Sentral
+  double _destLng  = 101.6862;
+  String _destName = 'KL Sentral';
 
-  static const String _bgUrl =
-      'https://lh3.googleusercontent.com/aida-public/AB6AXuAu85AV9lXuMTvTcGbsbswqGGk2SFnWPQgGjBBh4X1cX76glxmFcipDhkwExRCTu9cxAsqNNF4nN0_4bh-PcdToIkmyI0fcAim7X3GZVxlKtay7p6o09jH4CzFAxgXJpB73JlnvTxp-semeXMuAZyOMKabu5IeuQLU5YYIPUiVynWnNYa51O9HNMAyZStPacfytAOmqn937yYFxMhb7dYjGYyiSZ-IXvBdu2daxUj9P4efItG2fzCNAYmfQor7UIeeZmIBD-90buH0';
+  bool _checkingSupport = true;
+  bool _isSupported     = false;
+  bool _isLaunching     = false;
 
   @override
-  void initState() {
-    super.initState();
-    _arrowCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1800),
-    )..repeat(reverse: true);
-    _arrowOpacity = Tween<double>(begin: 0.4, end: 0.9).animate(
-      CurvedAnimation(parent: _arrowCtrl, curve: Curves.easeInOut),
-    );
-    _arrowOffset = Tween<double>(begin: 0, end: -18).animate(
-      CurvedAnimation(parent: _arrowCtrl, curve: Curves.easeInOut),
-    );
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final args = ModalRoute.of(context)?.settings.arguments;
+    if (args is Map) {
+      _destLat  = (args['latitude']    as num?)?.toDouble() ?? _destLat;
+      _destLng  = (args['longitude']   as num?)?.toDouble() ?? _destLng;
+      _destName = (args['stationName'] as String?) ?? _destName;
+    }
+    _checkArSupport();
   }
 
-  @override
-  void dispose() {
-    _arrowCtrl.dispose();
-    super.dispose();
+  Future<void> _checkArSupport() async {
+    final supported = await ArService.isArCoreAvailable();
+    if (mounted) {
+      setState(() {
+        _isSupported     = supported;
+        _checkingSupport = false;
+      });
+    }
+  }
+
+  Future<void> _launchAR() async {
+    if (_isLaunching) return;
+    setState(() => _isLaunching = true);
+    try {
+      await ArService.launchARNavigation(
+        latitude:    _destLat,
+        longitude:   _destLng,
+        stationName: _destName,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e'), backgroundColor: Colors.red.shade700),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLaunching = false);
+    }
   }
 
   @override
@@ -46,73 +74,49 @@ class _ARNavigationScreenState extends State<ARNavigationScreen>
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // Camera / Street view background
+          // ── Background gradient ──────────────────────────────────────────
           Positioned.fill(
-            child: CachedNetworkImage(
-              imageUrl: _bgUrl,
-              fit: BoxFit.cover,
-              errorWidget: (_, __, ___) => Container(
-                color: Colors.black87,
-                child: const Center(
-                  child: Icon(Icons.camera_alt_outlined, size: 80, color: Colors.white30),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    const Color(0xFF0A0A1A),
+                    const Color(0xFF0D1B3E),
+                    const Color(0xFF0A0A1A),
+                  ],
                 ),
               ),
             ),
           ),
 
-          // Animated AR arrow overlay
-          Positioned(
-            bottom: MediaQuery.of(context).size.height * 0.22,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: AnimatedBuilder(
-                animation: _arrowCtrl,
-                builder: (_, __) => Transform.translate(
-                  offset: Offset(0, _arrowOffset.value),
-                  child: Opacity(
-                    opacity: _arrowOpacity.value,
-                    child: _ARArrow(),
-                  ),
-                ),
-              ),
-            ),
-          ),
+          // ── AR grid lines (decorative) ───────────────────────────────────
+          Positioned.fill(child: CustomPaint(painter: _GridPainter())),
 
-          // Top bar
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: SafeArea(
-              bottom: false,
-              child: _TopBar(onClose: () => Navigator.pop(context)),
-            ),
-          ),
-
-          // Direction card
-          Positioned(
-            top: MediaQuery.of(context).padding.top + kToolbarHeight + 12,
-            left: 16,
-            right: 16,
-            child: const _DirectionCard(),
-          ),
-
-          // Side action buttons
-          Positioned(
-            right: 16,
-            top: 0,
-            bottom: 0,
-            child: Center(child: _SideButtons()),
-          ),
-
-          // Bottom panel
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: _BottomPanel(
-              onProgressTap: () => Navigator.pushNamed(context, '/trip-summary'),
+          // ── Content ──────────────────────────────────────────────────────
+          SafeArea(
+            child: Column(
+              children: [
+                _TopBar(onClose: () => Navigator.pop(context)),
+                const Spacer(),
+                _ARIcon(isSupported: _isSupported, checking: _checkingSupport),
+                const SizedBox(height: 32),
+                _DestinationCard(name: _destName, lat: _destLat, lng: _destLng),
+                const SizedBox(height: 40),
+                if (_checkingSupport)
+                  _StatusChip(label: 'Checking device compatibility…', isLoading: true)
+                else if (_isSupported)
+                  _LaunchButton(
+                    isLaunching: _isLaunching,
+                    onTap: _launchAR,
+                  )
+                else
+                  const _UnsupportedCard(),
+                const Spacer(flex: 2),
+                _InfoFooter(isSupported: _isSupported),
+                const SizedBox(height: 24),
+              ],
             ),
           ),
         ],
@@ -121,46 +125,7 @@ class _ARNavigationScreenState extends State<ARNavigationScreen>
   }
 }
 
-class _ARArrow extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return CustomPaint(
-      size: const Size(80, 140),
-      painter: _ArrowPainter(),
-    );
-  }
-}
-
-class _ArrowPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [
-          const Color(0xFF004D99).withOpacity(0.8),
-          Colors.transparent,
-        ],
-      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height))
-      ..style = PaintingStyle.fill;
-
-    final path = Path()
-      ..moveTo(size.width / 2, 0)
-      ..lineTo(size.width, size.height * 0.45)
-      ..lineTo(size.width * 0.65, size.height * 0.45)
-      ..lineTo(size.width * 0.65, size.height)
-      ..lineTo(size.width * 0.35, size.height)
-      ..lineTo(size.width * 0.35, size.height * 0.45)
-      ..lineTo(0, size.height * 0.45)
-      ..close();
-
-    canvas.drawPath(path, paint);
-  }
-
-  @override
-  bool shouldRepaint(_ArrowPainter oldDelegate) => false;
-}
+// ── Sub-widgets ───────────────────────────────────────────────────────────────
 
 class _TopBar extends StatelessWidget {
   final VoidCallback onClose;
@@ -168,36 +133,21 @@ class _TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: kToolbarHeight,
-      margin: const EdgeInsets.symmetric(horizontal: 0),
-      decoration: BoxDecoration(
-        color: AppColors.surface.withOpacity(0.85),
-        borderRadius: const BorderRadius.only(
-          bottomLeft: Radius.circular(16),
-          bottomRight: Radius.circular(16),
-        ),
-        border: Border.all(color: Colors.white.withOpacity(0.2)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.15),
-            blurRadius: 8,
-          ),
-        ],
-      ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Row(
         children: [
           IconButton(
-            icon: const Icon(Icons.close, color: AppColors.onSurface),
+            icon: const Icon(Icons.close, color: Colors.white70),
             onPressed: onClose,
           ),
-          const Expanded(
+          Expanded(
             child: Text(
               'AR Navigation',
-              style: TextStyle(
+              style: GoogleFonts.inter(
                 fontSize: 18,
                 fontWeight: FontWeight.w700,
-                color: AppColors.primary,
+                color: Colors.white,
               ),
               textAlign: TextAlign.center,
             ),
@@ -209,56 +159,88 @@ class _TopBar extends StatelessWidget {
   }
 }
 
-class _DirectionCard extends StatelessWidget {
-  const _DirectionCard();
+class _ARIcon extends StatelessWidget {
+  final bool isSupported;
+  final bool checking;
+  const _ARIcon({required this.isSupported, required this.checking});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = checking
+        ? Colors.white38
+        : isSupported
+            ? const Color(0xFF4285F4)
+            : Colors.red.shade400;
+
+    return Container(
+      width: 96,
+      height: 96,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: color.withOpacity(0.6), width: 2),
+        color: color.withOpacity(0.12),
+      ),
+      child: Icon(
+        checking
+            ? Icons.radar
+            : isSupported
+                ? Icons.view_in_ar_rounded
+                : Icons.warning_amber_rounded,
+        size: 48,
+        color: color,
+      ),
+    );
+  }
+}
+
+class _DestinationCard extends StatelessWidget {
+  final String name;
+  final double lat, lng;
+  const _DestinationCard({required this.name, required this.lat, required this.lng});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.symmetric(horizontal: 32),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: AppColors.surface.withOpacity(0.88),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.outlineVariant.withOpacity(0.4)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.15),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        color: Colors.white.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withOpacity(0.12)),
       ),
       child: Row(
         children: [
           Container(
-            width: 48,
-            height: 48,
-            decoration: const BoxDecoration(
-              color: AppColors.primary,
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: const Color(0xFF4285F4).withOpacity(0.2),
               shape: BoxShape.circle,
             ),
-            child: const Icon(Icons.arrow_upward, size: 26, color: AppColors.onPrimary),
+            child: const Icon(Icons.train_rounded, color: Color(0xFF4285F4), size: 22),
           ),
-          const SizedBox(width: 14),
-          const Expanded(
+          const SizedBox(width: 16),
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Walk straight 200m',
-                  style: TextStyle(
-                    fontSize: 18,
+                  'Destination',
+                  style: GoogleFonts.inter(fontSize: 11, color: Colors.white38),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  name,
+                  style: GoogleFonts.inter(
+                    fontSize: 16,
                     fontWeight: FontWeight.w600,
-                    color: AppColors.onSurface,
+                    color: Colors.white,
                   ),
                 ),
-                SizedBox(height: 3),
+                const SizedBox(height: 2),
                 Text(
-                  'towards Muzium Negara MRT',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: AppColors.onSurfaceVariant,
-                  ),
+                  '${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}',
+                  style: GoogleFonts.inter(fontSize: 11, color: Colors.white38),
                 ),
               ],
             ),
@@ -269,142 +251,193 @@ class _DirectionCard extends StatelessWidget {
   }
 }
 
-class _SideButtons extends StatelessWidget {
+class _LaunchButton extends StatelessWidget {
+  final bool isLaunching;
+  final VoidCallback onTap;
+  const _LaunchButton({required this.isLaunching, required this.onTap});
+
   @override
   Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
+    return GestureDetector(
+      onTap: isLaunching ? null : onTap,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 40),
+        height: 56,
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF1A73E8), Color(0xFF4285F4)],
+          ),
+          borderRadius: BorderRadius.circular(28),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF4285F4).withOpacity(0.4),
+              blurRadius: 20,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Center(
+          child: isLaunching
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2.5,
+                  ),
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.view_in_ar_rounded, color: Colors.white, size: 20),
+                    const SizedBox(width: 10),
+                    Text(
+                      'Start AR Navigation',
+                      style: GoogleFonts.inter(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StatusChip extends StatelessWidget {
+  final String label;
+  final bool isLoading;
+  const _StatusChip({required this.label, this.isLoading = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isLoading) ...[
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(color: Colors.white54, strokeWidth: 2),
+            ),
+            const SizedBox(width: 10),
+          ],
+          Text(
+            label,
+            style: GoogleFonts.inter(fontSize: 13, color: Colors.white60),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UnsupportedCard extends StatelessWidget {
+  const _UnsupportedCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 40),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.red.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.red.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: [
+          Icon(Icons.warning_amber_rounded, color: Colors.red.shade400, size: 28),
+          const SizedBox(height: 10),
+          Text(
+            'ARCore Not Supported',
+            style: GoogleFonts.inter(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: Colors.red.shade300,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'This device does not support ARCore, or Google Play Services for AR is not installed.',
+            style: GoogleFonts.inter(fontSize: 12, color: Colors.white54),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoFooter extends StatelessWidget {
+  final bool isSupported;
+  const _InfoFooter({required this.isSupported});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isSupported) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 40),
+      child: Column(
+        children: [
+          _InfoRow(Icons.gps_fixed, 'Requires strong GPS signal outdoors'),
+          const SizedBox(height: 6),
+          _InfoRow(Icons.streetview, 'Works best in Google Street View areas'),
+          const SizedBox(height: 6),
+          _InfoRow(Icons.wifi, 'Active internet connection needed'),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  const _InfoRow(this.icon, this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
       children: [
-        _FloatingActionBtn(icon: Icons.volume_up_outlined),
-        const SizedBox(height: 10),
-        _FloatingActionBtn(
-          icon: Icons.my_location_outlined,
-          color: AppColors.onSurfaceVariant,
+        Icon(icon, size: 14, color: Colors.white30),
+        const SizedBox(width: 8),
+        Text(
+          text,
+          style: GoogleFonts.inter(fontSize: 12, color: Colors.white30),
         ),
       ],
     );
   }
 }
 
-class _FloatingActionBtn extends StatelessWidget {
-  final IconData icon;
-  final Color color;
-  const _FloatingActionBtn({
-    required this.icon,
-    this.color = AppColors.primary,
-  });
+// ── Decorative grid painter ───────────────────────────────────────────────────
+
+class _GridPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withOpacity(0.03)
+      ..strokeWidth = 1;
+    const step = 40.0;
+    for (double x = 0; x < size.width; x += step) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    }
+    for (double y = 0; y < size.height; y += step) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+    }
+  }
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 48,
-      height: 48,
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        shape: BoxShape.circle,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.15),
-            blurRadius: 8,
-          ),
-        ],
-      ),
-      child: Icon(icon, size: 22, color: color),
-    );
-  }
-}
-
-class _BottomPanel extends StatelessWidget {
-  final VoidCallback onProgressTap;
-  const _BottomPanel({required this.onProgressTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.surface.withOpacity(0.88),
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(20),
-          topRight: Radius.circular(20),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.15),
-            blurRadius: 12,
-            offset: const Offset(0, -4),
-          ),
-        ],
-      ),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 10),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '150m',
-                        style: TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.primary,
-                        ),
-                      ),
-                      Text(
-                        'remaining',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: AppColors.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      const Text(
-                        '2 mins',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.onSurface,
-                        ),
-                      ),
-                      Text(
-                        'Estimated arrival',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: AppColors.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              GestureDetector(
-                onTap: onProgressTap,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(50),
-                  child: LinearProgressIndicator(
-                    value: 0.25,
-                    minHeight: 8,
-                    backgroundColor: AppColors.surfaceVariant,
-                    color: AppColors.primary,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  bool shouldRepaint(_GridPainter old) => false;
 }
