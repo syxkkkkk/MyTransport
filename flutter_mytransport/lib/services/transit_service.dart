@@ -112,7 +112,255 @@ class TransitService {
   }
 
   static double _rad(double deg) => deg * pi / 180;
+
+  // ── Route planning ──────────────────────────────────────────────────────────
+
+  static RouteResult computeRoute(NearbyStation origin, NearbyStation destination) {
+    if (origin.id == destination.id) {
+      return RouteResult.sameStation(origin.name);
+    }
+
+    final originCodes = origin.lines.map((l) => l.line.code).toSet();
+    final destCodes   = destination.lines.map((l) => l.line.code).toSet();
+
+    // ── Direct (no transfer) ────────────────────────────────────────────────
+    final shared = originCodes.intersection(destCodes);
+    if (shared.isNotEmpty) {
+      final code     = shared.first;
+      final lineInfo = origin.lines.firstWhere((l) => l.line.code == code).line;
+      final (stops, dirName) = _stopsAndDir(code, origin.id, destination.id);
+      final mins  = (stops * 2.5).round() + 3;
+      final fare  = _fare(code, stops);
+      return RouteResult(
+        found: true,
+        originName: origin.name,
+        destName: destination.name,
+        totalMinutes: mins,
+        fareRM: fare,
+        segments: [
+          RouteSegment(type: SegmentType.ride, title: lineInfo.name,
+            subtitle: 'Towards $dirName', lineCode: code,
+            lineColor: lineInfo.color, stops: stops, minutes: mins - 3),
+          RouteSegment(type: SegmentType.arrive,
+            title: 'Arrive at ${destination.name}', subtitle: 'Exit station'),
+        ],
+      );
+    }
+
+    // ── 1-transfer ──────────────────────────────────────────────────────────
+    RouteResult? best;
+    for (final raw in _kStations) {
+      final stCodes = (raw['lines'] as List<Map<String, String>>)
+          .map((l) => l['code']!)
+          .toSet();
+      final leg1Codes = originCodes.intersection(stCodes);
+      final leg2Codes = destCodes.intersection(stCodes);
+      if (leg1Codes.isEmpty || leg2Codes.isEmpty) continue;
+
+      final xferId   = raw['id'] as String;
+      final xferName = raw['name'] as String;
+      final xferLines = (raw['lines'] as List<Map<String, String>>)
+          .map((l) => StationLine(line: TransitLineInfo(
+                code: l['code']!, name: l['name']!, color: l['color']!)))
+          .toList();
+
+      final c1 = leg1Codes.first;
+      final c2 = leg2Codes.first;
+      final l1 = origin.lines.firstWhere((l) => l.line.code == c1).line;
+      final l2 = xferLines.firstWhere((l) => l.line.code == c2).line;
+
+      final (s1, d1) = _stopsAndDir(c1, origin.id, xferId);
+      final (s2, d2) = _stopsAndDir(c2, xferId, destination.id);
+
+      final mins = (s1 * 2.5 + s2 * 2.5).round() + 8; // +8 for transfer
+      final fare = _fare(c1, s1) + _fare(c2, s2);
+
+      final candidate = RouteResult(
+        found: true,
+        originName: origin.name,
+        destName: destination.name,
+        totalMinutes: mins,
+        fareRM: fare,
+        segments: [
+          RouteSegment(type: SegmentType.ride, title: l1.name,
+            subtitle: 'Towards $d1', lineCode: c1,
+            lineColor: l1.color, stops: s1, minutes: (s1 * 2.5).round()),
+          RouteSegment(type: SegmentType.transfer,
+            title: 'Transfer at $xferName',
+            subtitle: 'Change to ${l2.name}',
+            lineCode: c2, lineColor: l2.color, minutes: 5),
+          RouteSegment(type: SegmentType.ride, title: l2.name,
+            subtitle: 'Towards $d2', lineCode: c2,
+            lineColor: l2.color, stops: s2, minutes: (s2 * 2.5).round()),
+          RouteSegment(type: SegmentType.arrive,
+            title: 'Arrive at ${destination.name}', subtitle: 'Exit station'),
+        ],
+      );
+
+      if (best == null || candidate.totalMinutes < best.totalMinutes) {
+        best = candidate;
+      }
+    }
+
+    return best ?? RouteResult.notFound(origin.name, destination.name);
+  }
+
+  // Returns (stopCount, terminusName) for a segment on a line.
+  static (int, String) _stopsAndDir(String code, String fromId, String toId) {
+    final seq = _kLineSeqs[code];
+    if (seq == null) return (8, toId);
+    final iA = seq.indexOf(fromId);
+    final iB = seq.indexOf(toId);
+    if (iA < 0 || iB < 0) return (8, _nameOf(toId));
+    final terminus = iB > iA ? seq.last : seq.first;
+    return ((iB - iA).abs(), _nameOf(terminus));
+  }
+
+  static String _nameOf(String id) {
+    try {
+      return _kStations.firstWhere((s) => s['id'] == id)['name'] as String;
+    } catch (_) {
+      return id;
+    }
+  }
+
+  static double _fare(String code, int stops) {
+    if (code == 'ERL') return 35.0;
+    if (code.startsWith('KTM')) return (0.60 + stops * 0.25).clamp(0.60, 9.50);
+    return (0.70 + stops * 0.12).clamp(0.70, 4.00);
+  }
 }
+
+// ── Route models ──────────────────────────────────────────────────────────────
+
+enum SegmentType { ride, transfer, arrive }
+
+class RouteSegment {
+  final SegmentType type;
+  final String title;
+  final String subtitle;
+  final String? lineCode;
+  final String? lineColor;
+  final int? stops;
+  final int? minutes;
+
+  const RouteSegment({
+    required this.type,
+    required this.title,
+    required this.subtitle,
+    this.lineCode,
+    this.lineColor,
+    this.stops,
+    this.minutes,
+  });
+}
+
+class RouteResult {
+  final bool found;
+  final bool isSameStation;
+  final String originName;
+  final String destName;
+  final List<RouteSegment> segments;
+  final int totalMinutes;
+  final double fareRM;
+
+  const RouteResult({
+    required this.found,
+    required this.originName,
+    required this.destName,
+    required this.segments,
+    required this.totalMinutes,
+    required this.fareRM,
+    this.isSameStation = false,
+  });
+
+  factory RouteResult.notFound(String o, String d) =>
+      RouteResult(found: false, originName: o, destName: d,
+          segments: [], totalMinutes: 0, fareRM: 0);
+
+  factory RouteResult.sameStation(String name) =>
+      RouteResult(found: false, isSameStation: true,
+          originName: name, destName: name,
+          segments: [], totalMinutes: 0, fareRM: 0);
+}
+
+// ── Ordered station sequences per line ────────────────────────────────────────
+
+const _lrtKJSeq = [
+  'lrt-gombak','lrt-wangsa-maju','lrt-sri-rampai','lrt-setiawangsa',
+  'lrt-jelatek','lrt-damai','lrt-ampang-park','lrt-klcc','lrt-dang-wangi',
+  'lrt-masjid-jamek','lrt-pasar-seni','ktm-kl-sentral','lrt-bangsar',
+  'lrt-universiti','lrt-kerinchi','lrt-abdullah-hukum','lrt-angkasapuri',
+  'lrt-pantai-dalam','lrt-taman-jaya','lrt-asia-jaya','lrt-taman-paramount',
+  'lrt-taman-bahagia','lrt-lembah-subang','lrt-ara-damansara',
+  'lrt-subang-jaya-lrt','lrt-ss15','lrt-ss18','lrt-kelana-jaya',
+];
+
+const _lrtAMPSeq = [
+  'lrt-sentul-timur','lrt-titiwangsa','lrt-pwtc','lrt-sultan-ismail',
+  'lrt-bandaraya','lrt-masjid-jamek','lrt-hang-tuah','lrt-plaza-rakyat',
+  'lrt-maluri','lrt-pandan-maju','lrt-pandan-jaya','lrt-pandan-indah',
+  'ktm-bandar-tasik-selatan','lrt-tasik-selatan','lrt-sri-petaling',
+  'lrt-bukit-jalil','lrt-batu-11-cheras','lrt-cempaka','lrt-cahaya','lrt-ampang',
+];
+
+const _mrtKJSeq = [
+  'ktm-sungai-buloh','mrt-kwasa-damansara','mrt-kwasa-sentral',
+  'mrt-kota-damansara','mrt-surian','mrt-mutiara-damansara','mrt-bandar-utama',
+  'mrt-ttdi','mrt-phileo-damansara','mrt-pusat-bandar','mrt-semantan',
+  'mrt-muzium-negara','mrt-merdeka','lrt-pasar-seni','mrt-bukit-bintang',
+  'mrt-trx','mrt-cochrane','lrt-maluri','mrt-taman-pertama','mrt-taman-midah',
+  'mrt-taman-mutiara','mrt-taman-connaught','mrt-taman-suntex',
+  'mrt-batu-11-crs','mrt-kajang',
+];
+
+const _mrtPYSeq = [
+  'mrt-kwasa-damansara','mrt-damansara-damai','mrt-sri-damansara-b',
+  'mrt-sri-damansara-s','mrt-sri-damansara-t','mrt-metro-prima',
+  'mrt-kepong-baru','mrt-jalan-ipoh-mrt','lrt-titiwangsa','mrt-hospital-kl',
+  'lrt-ampang-park','mrt-conlay','mrt-trx','mrt-chan-sow-lin','mrt-kuchai',
+  'mrt-seri-kembangan','mrt-cyberjaya-utara','mrt-cyberjaya-barat',
+  'mrt-putrajaya-sentral','mrt-salak-tinggi',
+];
+
+const _ktmPKSeq = [
+  'ktm-pelabuhan-klang','ktm-kampung-raja-uda','ktm-teluk-gadung',
+  'ktm-teluk-pulai','ktm-klang','ktm-padang-jawa','ktm-batu-tiga',
+  'ktm-shah-alam','ktm-subang-jaya','ktm-setia-jaya','ktm-seri-setia',
+  'ktm-petaling','ktm-kl-sentral','ktm-kuala-lumpur','ktm-bank-negara',
+  'ktm-putra','ktm-segambut','ktm-kepong','ktm-kepong-sentral',
+  'ktm-sungai-buloh',
+];
+
+const _ktmSBSeq = [
+  'ktm-batu-caves','ktm-kampung-batu','ktm-taman-wahyu','ktm-jalan-ipoh',
+  'ktm-sentul','ktm-segambut','ktm-putra','ktm-bank-negara','ktm-kuala-lumpur',
+  'ktm-kl-sentral','ktm-mid-valley','ktm-seputeh','ktm-salak-selatan',
+  'ktm-bandar-tasik-selatan','ktm-serdang','ktm-ukm','ktm-bangi',
+  'ktm-nilai','ktm-seremban','mrt-kajang',
+];
+
+const _monoSeq = [
+  'ktm-kl-sentral','mono-tun-sambanthan','mono-maharajalela','lrt-hang-tuah',
+  'mono-imbi','mono-bukit-bintang-m','mono-raja-chulan','mono-bukit-nanas',
+  'lrt-dang-wangi','mono-chow-kit','lrt-titiwangsa',
+];
+
+const _erlSeq = [
+  'ktm-kl-sentral','mrt-putrajaya-sentral','mrt-salak-tinggi',
+  'erl-klia2','erl-klia',
+];
+
+const _kLineSeqs = <String, List<String>>{
+  'LRT-KJ':  _lrtKJSeq,
+  'LRT-AMP': _lrtAMPSeq,
+  'MRT-KJ':  _mrtKJSeq,
+  'MRT-PY':  _mrtPYSeq,
+  'KTM-PK':  _ktmPKSeq,
+  'KTM-SB':  _ktmSBSeq,
+  'MONO':    _monoSeq,
+  'ERL':     _erlSeq,
+};
 
 // ── Station database ──────────────────────────────────────────────────────────
 // Lines: KTM Port Klang, KTM Seremban, LRT Kelana Jaya, LRT Ampang/Sri Petaling,

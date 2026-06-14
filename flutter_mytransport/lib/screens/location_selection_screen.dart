@@ -15,6 +15,134 @@ class LocationSelectionScreen extends StatefulWidget {
       _LocationSelectionScreenState();
 }
 
+// ── Destination picker ────────────────────────────────────────────────────────
+
+class _DestinationPickerSheet extends StatefulWidget {
+  final String excludeId;
+  final List<NearbyStation> allStations;
+  const _DestinationPickerSheet({required this.excludeId, required this.allStations});
+
+  @override
+  State<_DestinationPickerSheet> createState() => _DestinationPickerSheetState();
+}
+
+class _DestinationPickerSheetState extends State<_DestinationPickerSheet> {
+  final _ctrl = TextEditingController();
+  late List<NearbyStation> _filtered;
+
+  @override
+  void initState() {
+    super.initState();
+    _filtered = widget.allStations.where((s) => s.id != widget.excludeId).toList();
+  }
+
+  void _onSearch(String q) {
+    final lower = q.toLowerCase();
+    setState(() {
+      _filtered = widget.allStations
+          .where((s) =>
+              s.id != widget.excludeId &&
+              (s.name.toLowerCase().contains(lower) ||
+               s.code.toLowerCase().contains(lower) ||
+               s.lines.any((l) => l.line.name.toLowerCase().contains(lower))))
+          .toList();
+    });
+  }
+
+  Color _color(String hex) {
+    try {
+      return Color(int.parse('FF${hex.replaceFirst('#', '')}', radix: 16));
+    } catch (_) {
+      return AppColors.primary;
+    }
+  }
+
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.88,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      builder: (_, sc) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(children: [
+          Container(
+            margin: const EdgeInsets.symmetric(vertical: 10),
+            width: 36, height: 4,
+            decoration: BoxDecoration(color: Colors.black12,
+                borderRadius: BorderRadius.circular(2)),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Choose Destination',
+                  style: GoogleFonts.inter(fontSize: 18,
+                      fontWeight: FontWeight.w700, color: AppColors.onSurface)),
+              const SizedBox(height: 12),
+              Container(
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceVariant,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: TextField(
+                  controller: _ctrl,
+                  onChanged: _onSearch,
+                  style: GoogleFonts.inter(fontSize: 14),
+                  decoration: InputDecoration(
+                    hintText: 'Search station or line…',
+                    hintStyle: GoogleFonts.inter(color: AppColors.onSurfaceVariant, fontSize: 14),
+                    prefixIcon: const Icon(Icons.search, color: AppColors.onSurfaceVariant, size: 20),
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+            ]),
+          ),
+          Expanded(
+            child: ListView.builder(
+              controller: sc,
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+              itemCount: _filtered.length,
+              itemBuilder: (_, i) {
+                final s = _filtered[i];
+                final c = _color(s.primaryColor);
+                return ListTile(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  leading: Container(
+                    width: 40, height: 40,
+                    decoration: BoxDecoration(
+                        color: c.withOpacity(0.15), shape: BoxShape.circle),
+                    child: Icon(Icons.train_outlined, color: c, size: 18),
+                  ),
+                  title: Text(s.name,
+                      style: GoogleFonts.inter(fontSize: 14,
+                          fontWeight: FontWeight.w600, color: AppColors.onSurface)),
+                  subtitle: Text(
+                    s.lines.map((l) => l.line.code).join(' · '),
+                    style: GoogleFonts.inter(fontSize: 11, color: AppColors.onSurfaceVariant),
+                  ),
+                  trailing: Text(s.code,
+                      style: GoogleFonts.inter(fontSize: 11, color: AppColors.onSurfaceVariant)),
+                  onTap: () => Navigator.pop(context, s),
+                );
+              },
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
   final Completer<GoogleMapController> _mapCompleter = Completer();
 
@@ -168,6 +296,23 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
       }
     } catch (_) {
       if (mounted) setState(() => _loadingStations = false);
+    }
+  }
+
+  Future<void> _pickDestination(BuildContext ctx) async {
+    final origin = _selectedStation!;
+    final dest = await showModalBottomSheet<NearbyStation>(
+      context: ctx,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _DestinationPickerSheet(
+        excludeId: origin.id,
+        allStations: _transitService.getAllStations(),
+      ),
+    );
+    if (dest != null && mounted) {
+      Navigator.pushNamed(ctx, '/route-details',
+          arguments: {'origin': origin, 'destination': dest});
     }
   }
 
@@ -699,8 +844,7 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
                     width: double.infinity,
                     height: 50,
                     child: ElevatedButton(
-                      onPressed: () => Navigator.pushNamed(
-                          context, '/route-details'),
+                      onPressed: () => _pickDestination(context),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.primary,
                         foregroundColor: Colors.white,
@@ -708,12 +852,20 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
                             borderRadius: BorderRadius.circular(12)),
                         elevation: 0,
                       ),
-                      child: Text(
-                        'Get Route from ${_selectedStation!.name}',
-                        style: GoogleFonts.inter(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700),
-                        overflow: TextOverflow.ellipsis,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.directions, size: 18),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              'Get Route from ${_selectedStation!.name}',
+                              style: GoogleFonts.inter(
+                                  fontSize: 14, fontWeight: FontWeight.w700),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
