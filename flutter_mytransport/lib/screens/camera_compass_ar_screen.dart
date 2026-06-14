@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:math';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 
 // ── AR destination model ──────────────────────────────────────────────────────
 
@@ -48,17 +50,25 @@ class _CameraCompassARScreenState extends State<CameraCompassARScreen> {
   double _userLat = 0, _userLng = 0;
   bool _hasLocation = false;
 
+  /// Device pitch in degrees.
+  /// 0 = phone held upright, +90 = tilted back (camera pointing up),
+  /// -90 = tilted forward (camera pointing down).
+  double _devicePitch = 0.0;
+  StreamSubscription<AccelerometerEvent>? _accelSub;
+
   @override
   void initState() {
     super.initState();
     _initCamera();
     _startCompass();
     _startLocation();
+    _startPitch();
   }
 
   @override
   void dispose() {
     _camCtrl?.dispose();
+    _accelSub?.cancel();
     super.dispose();
   }
 
@@ -91,6 +101,21 @@ class _CameraCompassARScreenState extends State<CameraCompassARScreen> {
     FlutterCompass.events?.listen((e) {
       if (mounted && e.heading != null) {
         setState(() => _compassHeading = e.heading!);
+      }
+    });
+  }
+
+  // ── Pitch (tilt) via accelerometer ───────────────────────────────────────────
+
+  void _startPitch() {
+    _accelSub = accelerometerEventStream(
+      samplingPeriod: const Duration(milliseconds: 80),
+    ).listen((AccelerometerEvent e) {
+      if (!mounted) return;
+      // pitch: 0 = upright, +90 = tilted back (camera up), -90 = tilted forward (camera down)
+      final pitch = atan2(-e.z, e.y) * 180 / pi;
+      if ((pitch - _devicePitch).abs() > 0.5) {
+        setState(() => _devicePitch = pitch);
       }
     });
   }
@@ -179,6 +204,7 @@ class _CameraCompassARScreenState extends State<CameraCompassARScreen> {
                     for (final d in widget.destinations) d: _distanceTo(d),
                   },
                   nearest: nearest,
+                  devicePitch: _devicePitch,
                 ),
               ),
             ),
@@ -238,53 +264,69 @@ class _MultiPinPainter extends CustomPainter {
   final Map<ArDestination, double> relativeBearings; // -180 to +180
   final Map<ArDestination, double> distances;         // metres
   final ArDestination? nearest;
+  final double devicePitch; // degrees: 0=upright, +90=tilted back, -90=tilted fwd
 
-  static const double _fov = 60.0; // degrees visible on each side
-  static const double _horizonRatio = 0.48; // horizon at 48% from top
+  static const double _hFov     = 60.0;  // horizontal FOV (each side)
+  static const double _vFov     = 25.0;  // vertical FOV (each side, ~50° total)
+  static const double _horizonR = 0.48;  // horizon at 48% from top when upright
 
   _MultiPinPainter({
     required this.destinations,
     required this.relativeBearings,
     required this.distances,
     required this.nearest,
+    this.devicePitch = 0.0,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final horizonY = size.height * _horizonRatio;
-    final cx       = size.width / 2;
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    // Base horizon Y (when phone is upright).
+    // Shifts up when tilting back (camera pointing up) and down when tilting forward.
+    // pitch > 0 → camera tilted up → horizon appears lower on screen → horizonY increases.
+    final horizonY = (size.height * _horizonR) + (devicePitch / _vFov) * cy;
 
     // Draw horizon line
-    _drawHorizon(canvas, size, horizonY);
+    _drawHorizon(canvas, size, horizonY.clamp(20.0, size.height - 20.0));
 
-    // Separate in-view and off-screen destinations
-    final inView    = <ArDestination>[];
-    final offLeft   = <ArDestination>[];
-    final offRight  = <ArDestination>[];
+    // Classify each destination
+    final inView   = <ArDestination>[];
+    final offLeft  = <ArDestination>[];
+    final offRight = <ArDestination>[];
+    final offUp    = <ArDestination>[];
+    final offDown  = <ArDestination>[];
 
     for (final d in destinations) {
       final rb = relativeBearings[d]!;
-      if (rb.abs() <= _fov) {
-        inView.add(d);
-      } else if (rb < 0) {
-        offLeft.add(d);
+      final pinY = horizonY;  // horizontal target, vertical varies by pitch
+
+      if (rb.abs() > _hFov) {
+        if (rb < 0) offLeft.add(d); else offRight.add(d);
+      } else if (pinY < -20) {
+        offUp.add(d);
+      } else if (pinY > size.height + 20) {
+        offDown.add(d);
       } else {
-        offRight.add(d);
+        inView.add(d);
       }
     }
 
     // Draw in-view pins
     for (final d in inView) {
-      final rb     = relativeBearings[d]!;
-      final x      = cx + (rb / _fov) * cx;
-      final dist   = distances[d]!;
-      final isNear = d == nearest;
-      _drawPin(canvas, size, x, horizonY, d, dist, isNear);
+      final rb   = relativeBearings[d]!;
+      final x    = cx + (rb / _hFov) * cx;
+      final dist = distances[d]!;
+      _drawPin(canvas, size, x, horizonY, d, dist, d == nearest);
     }
 
-    // Draw off-screen edge indicators
-    if (offLeft.isNotEmpty) _drawEdgeIndicator(canvas, size, horizonY, offLeft, isLeft: true);
-    if (offRight.isNotEmpty) _drawEdgeIndicator(canvas, size, horizonY, offRight, isLeft: false);
+    // Edge arrows — left/right (badge sits at horizonY so it lines up with where pin would be)
+    if (offLeft.isNotEmpty)  _drawEdgeArrow(canvas, size, offLeft,  side: 'left',   y: horizonY);
+    if (offRight.isNotEmpty) _drawEdgeArrow(canvas, size, offRight, side: 'right',  y: horizonY);
+    // Edge arrows — up/down (pin out of vertical FOV)
+    if (offUp.isNotEmpty)    _drawEdgeArrow(canvas, size, offUp,    side: 'top',    y: 0);
+    if (offDown.isNotEmpty)  _drawEdgeArrow(canvas, size, offDown,  side: 'bottom', y: size.height);
   }
 
   void _drawHorizon(Canvas canvas, Size size, double y) {
@@ -345,33 +387,113 @@ class _MultiPinPainter extends CustomPainter {
         color: Colors.white70, fontSize: 11, bold: false);
   }
 
-  void _drawEdgeIndicator(Canvas canvas, Size size, double horizonY,
-      List<ArDestination> dests, {required bool isLeft}) {
-    final x     = isLeft ? 28.0 : size.width - 28.0;
+  /// Draws a large, prominent edge arrow at the screen border pointing toward
+  /// off-screen destinations.
+  /// [side] is one of 'left', 'right', 'top', 'bottom'.
+  /// [y] is the vertical position hint (used only for left/right).
+  void _drawEdgeArrow(Canvas canvas, Size size,
+      List<ArDestination> dests, {required String side, required double y}) {
+    const double arrowHalf = 22.0;  // half-width of the arrow head
+    const double arrowLen  = 44.0;  // length of the arrow head
+    const double margin    = 14.0;  // distance from screen edge
+    const double badgeR    = 26.0;  // badge circle radius
+
     final color = dests.first.color;
+    final label = dests.length == 1
+        ? dests.first.label
+        : '${dests.length} pins';
 
-    // Arrow triangle
-    final arrowPath = Path();
-    if (isLeft) {
-      arrowPath
-        ..moveTo(x - 10, horizonY)
-        ..lineTo(x + 8,  horizonY - 10)
-        ..lineTo(x + 8,  horizonY + 10)
-        ..close();
-    } else {
-      arrowPath
-        ..moveTo(x + 10, horizonY)
-        ..lineTo(x - 8,  horizonY - 10)
-        ..lineTo(x - 8,  horizonY + 10)
-        ..close();
+    // ── Position & arrow geometry ─────────────────────────────────────────────
+    late double bx, by;           // badge centre
+    late List<Offset> triangle;   // arrow head vertices
+
+    switch (side) {
+      case 'left':
+        bx = margin + badgeR;
+        by = y.clamp(badgeR + margin, size.height - badgeR - margin);
+        triangle = [
+          Offset(bx - badgeR - arrowLen, by),        // tip
+          Offset(bx - badgeR,            by - arrowHalf),
+          Offset(bx - badgeR,            by + arrowHalf),
+        ];
+        break;
+      case 'right':
+        bx = size.width - margin - badgeR;
+        by = y.clamp(badgeR + margin, size.height - badgeR - margin);
+        triangle = [
+          Offset(bx + badgeR + arrowLen, by),        // tip
+          Offset(bx + badgeR,            by - arrowHalf),
+          Offset(bx + badgeR,            by + arrowHalf),
+        ];
+        break;
+      case 'top':
+        bx = size.width / 2;
+        by = margin + badgeR;
+        triangle = [
+          Offset(bx,              by - badgeR - arrowLen), // tip
+          Offset(bx - arrowHalf, by - badgeR),
+          Offset(bx + arrowHalf, by - badgeR),
+        ];
+        break;
+      default: // bottom
+        bx = size.width / 2;
+        by = size.height - margin - badgeR;
+        triangle = [
+          Offset(bx,              by + badgeR + arrowLen), // tip
+          Offset(bx - arrowHalf, by + badgeR),
+          Offset(bx + arrowHalf, by + badgeR),
+        ];
     }
-    canvas.drawPath(arrowPath,
-        Paint()..color = color.withOpacity(0.85)..style = PaintingStyle.fill);
 
-    // Count badge
-    if (dests.length > 1) {
-      _drawText(canvas, '${dests.length}', x, horizonY - 24,
-          color: Colors.white70, fontSize: 11, bold: true);
+    // ── Glow behind arrow ────────────────────────────────────────────────────
+    final glowPaint = Paint()
+      ..color = color.withOpacity(0.30)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18);
+    canvas.drawCircle(Offset(bx, by), badgeR + 12, glowPaint);
+
+    // ── Arrow triangle ───────────────────────────────────────────────────────
+    final arrowPath = Path()
+      ..moveTo(triangle[0].dx, triangle[0].dy)
+      ..lineTo(triangle[1].dx, triangle[1].dy)
+      ..lineTo(triangle[2].dx, triangle[2].dy)
+      ..close();
+    canvas.drawPath(arrowPath,
+        Paint()..color = color.withOpacity(0.95)..style = PaintingStyle.fill);
+    canvas.drawPath(arrowPath,
+        Paint()
+          ..color = Colors.white.withOpacity(0.70)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.0);
+
+    // ── Badge circle ─────────────────────────────────────────────────────────
+    canvas.drawCircle(Offset(bx, by), badgeR,
+        Paint()..color = color.withOpacity(0.92)..style = PaintingStyle.fill);
+    canvas.drawCircle(Offset(bx, by), badgeR,
+        Paint()
+          ..color = Colors.white.withOpacity(0.85)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5);
+
+    // ── Label inside badge ───────────────────────────────────────────────────
+    _drawText(canvas, label, bx, by,
+        color: Colors.white, fontSize: 11, bold: true);
+
+    // ── Distance tag beside badge ────────────────────────────────────────────
+    if (dests.length == 1) {
+      final dist = distances[dests.first];
+      if (dist != null) {
+        final distStr = _fmtDist(dist);
+        // Place distance label on the inward side of the badge
+        final double tx, ty;
+        switch (side) {
+          case 'left':   tx = bx + badgeR + 34; ty = by; break;
+          case 'right':  tx = bx - badgeR - 34; ty = by; break;
+          case 'top':    tx = bx;               ty = by + badgeR + 14; break;
+          default:       tx = bx;               ty = by - badgeR - 14;
+        }
+        _drawText(canvas, distStr, tx, ty,
+            color: Colors.white70, fontSize: 12, bold: false);
+      }
     }
   }
 

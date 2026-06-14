@@ -27,6 +27,7 @@ dependencies:
   # Camera + Compass AR fallback (works on all devices)
   camera: ^0.10.6
   flutter_compass: ^0.8.0
+  sensors_plus: ^6.0.0
 
   # Local storage for auth token
   shared_preferences: ^2.3.2
