@@ -42,6 +42,21 @@ class StationEntranceData {
 
 const List<StationEntranceData> kStationEntrances = [
 
+  // ── Subang Jaya (LRT) ──────────────────────────────────────────────────────
+  StationEntranceData(
+    stationId: 'lrt-subang-jaya-lrt',
+    stationName: 'Subang Jaya (LRT)',
+    entrances: [
+      StationEntrance(
+        label: 'Platform 1',
+        direction: 'LRT KJ Line → Gombak',
+        lineCode: 'LRT-KJ',
+        pinColor: Color(0xFFE32026),
+        lat: 3.073712, lng: 101.481153, // TEST — replace with real coordinate
+      ),
+    ],
+  ),
+
   // ── KL Sentral ─────────────────────────────────────────────────────────────
   StationEntranceData(
     stationId: 'ktm-kl-sentral',

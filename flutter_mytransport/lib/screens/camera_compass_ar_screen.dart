@@ -102,8 +102,17 @@ class _CameraCompassARScreenState extends State<CameraCompassARScreen> {
     var perm = await Geolocator.checkPermission();
     if (perm == LocationPermission.denied) perm = await Geolocator.requestPermission();
     if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) return;
+
+    // 1 — Use last known position immediately so pins show without waiting.
+    final last = await Geolocator.getLastKnownPosition();
+    if (last != null && mounted) {
+      setState(() { _userLat = last.latitude; _userLng = last.longitude; _hasLocation = true; });
+    }
+
+    // 2 — Stream for live updates (refines position as GPS locks on).
     Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 2),
+      locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high, distanceFilter: 2),
     ).listen((pos) {
       if (mounted) setState(() { _userLat = pos.latitude; _userLng = pos.longitude; _hasLocation = true; });
     });
@@ -174,24 +183,24 @@ class _CameraCompassARScreenState extends State<CameraCompassARScreen> {
               ),
             ),
 
-          // GPS acquiring overlay
+          // GPS acquiring — small banner only, does NOT block the AR view
           if (!_hasLocation)
-            Positioned.fill(
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                  decoration: BoxDecoration(
-                      color: Colors.black54, borderRadius: BorderRadius.circular(20)),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(width: 14, height: 14,
-                          child: CircularProgressIndicator(color: Colors.white54, strokeWidth: 2)),
-                      const SizedBox(width: 10),
-                      Text('Acquiring GPS…',
-                          style: GoogleFonts.inter(color: Colors.white70, fontSize: 14)),
-                    ],
-                  ),
+            Positioned(
+              top: 80, left: 24, right: 24,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                    color: Colors.black54, borderRadius: BorderRadius.circular(20)),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const SizedBox(width: 12, height: 12,
+                        child: CircularProgressIndicator(color: Colors.white54, strokeWidth: 2)),
+                    const SizedBox(width: 8),
+                    Text('Acquiring GPS — go outdoors for best results',
+                        style: GoogleFonts.inter(color: Colors.white70, fontSize: 12)),
+                  ],
                 ),
               ),
             ),
