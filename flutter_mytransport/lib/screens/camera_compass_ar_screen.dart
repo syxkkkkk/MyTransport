@@ -5,21 +5,34 @@ import 'package:flutter_compass/flutter_compass.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-/// Camera + Compass AR navigation screen.
-///
-/// Works on ALL Android devices — no ARCore required.
-/// Uses live camera feed, GPS position, and device compass to
-/// overlay a directional arrow pointing toward the destination.
+// ── AR destination model ──────────────────────────────────────────────────────
+
+class ArDestination {
+  final String label;     // "Platform 1"
+  final String sublabel;  // "towards Gombak"
+  final double lat;
+  final double lng;
+  final Color color;
+
+  const ArDestination({
+    required this.label,
+    required this.sublabel,
+    required this.lat,
+    required this.lng,
+    required this.color,
+  });
+}
+
+// ── Screen ────────────────────────────────────────────────────────────────────
+
 class CameraCompassARScreen extends StatefulWidget {
-  final double destLat;
-  final double destLng;
   final String stationName;
+  final List<ArDestination> destinations;
 
   const CameraCompassARScreen({
     super.key,
-    required this.destLat,
-    required this.destLng,
     required this.stationName,
+    required this.destinations,
   });
 
   @override
@@ -28,10 +41,10 @@ class CameraCompassARScreen extends StatefulWidget {
 
 class _CameraCompassARScreenState extends State<CameraCompassARScreen> {
   CameraController? _camCtrl;
-  bool _camReady   = false;
+  bool _camReady  = false;
   String? _camError;
 
-  double _compassHeading = 0;   // degrees from North, 0–360
+  double _compassHeading = 0;
   double _userLat = 0, _userLng = 0;
   bool _hasLocation = false;
 
@@ -43,277 +56,338 @@ class _CameraCompassARScreenState extends State<CameraCompassARScreen> {
     _startLocation();
   }
 
-  // ── Camera ──────────────────────────────────────────────────────────────
+  @override
+  void dispose() {
+    _camCtrl?.dispose();
+    super.dispose();
+  }
+
+  // ── Camera ──────────────────────────────────────────────────────────────────
 
   Future<void> _initCamera() async {
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
-        setState(() => _camError = 'No camera found on this device');
+        setState(() => _camError = 'No camera found');
         return;
       }
       final back = cameras.firstWhere(
         (c) => c.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
       );
-      final ctrl = CameraController(
-        back,
-        ResolutionPreset.high,
-        enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg,
-      );
+      final ctrl = CameraController(back, ResolutionPreset.high,
+          enableAudio: false, imageFormatGroup: ImageFormatGroup.jpeg);
       await ctrl.initialize();
       if (!mounted) return;
-      setState(() {
-        _camCtrl  = ctrl;
-        _camReady = true;
-      });
+      setState(() { _camCtrl = ctrl; _camReady = true; });
     } catch (e) {
       if (mounted) setState(() => _camError = 'Camera error: $e');
     }
   }
 
-  // ── Compass ──────────────────────────────────────────────────────────────
+  // ── Compass ─────────────────────────────────────────────────────────────────
 
   void _startCompass() {
-    FlutterCompass.events?.listen((event) {
-      if (mounted && event.heading != null) {
-        setState(() => _compassHeading = event.heading!);
+    FlutterCompass.events?.listen((e) {
+      if (mounted && e.heading != null) {
+        setState(() => _compassHeading = e.heading!);
       }
     });
   }
 
-  // ── GPS ──────────────────────────────────────────────────────────────────
+  // ── GPS ─────────────────────────────────────────────────────────────────────
 
   Future<void> _startLocation() async {
     if (!await Geolocator.isLocationServiceEnabled()) return;
-
     var perm = await Geolocator.checkPermission();
-    if (perm == LocationPermission.denied) {
-      perm = await Geolocator.requestPermission();
-    }
-    if (perm == LocationPermission.denied ||
-        perm == LocationPermission.deniedForever) return;
-
+    if (perm == LocationPermission.denied) perm = await Geolocator.requestPermission();
+    if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) return;
     Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 2,
-      ),
+      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 2),
     ).listen((pos) {
-      if (mounted) {
-        setState(() {
-          _userLat     = pos.latitude;
-          _userLng     = pos.longitude;
-          _hasLocation = true;
-        });
-      }
+      if (mounted) setState(() { _userLat = pos.latitude; _userLng = pos.longitude; _hasLocation = true; });
     });
   }
 
-  // ── Navigation math ──────────────────────────────────────────────────────
+  // ── Math helpers ─────────────────────────────────────────────────────────────
 
-  /// Compass bearing from user to destination (0–360, 0 = North).
-  double get _bearingToDest => Geolocator.bearingBetween(
-      _userLat, _userLng, widget.destLat, widget.destLng);
+  double _bearingTo(ArDestination d) =>
+      Geolocator.bearingBetween(_userLat, _userLng, d.lat, d.lng);
 
-  /// Angle the arrow should rotate: 0 = straight ahead, 90 = turn right.
-  double get _relativeBearing =>
-      (_bearingToDest - _compassHeading + 360) % 360;
+  double _distanceTo(ArDestination d) =>
+      Geolocator.distanceBetween(_userLat, _userLng, d.lat, d.lng);
 
-  /// Straight-line distance in metres.
-  double get _distanceMetres => Geolocator.distanceBetween(
-      _userLat, _userLng, widget.destLat, widget.destLng);
-
-  String get _distanceLabel {
-    final d = _distanceMetres;
-    return d < 1000 ? '${d.toStringAsFixed(0)} m' : '${(d / 1000).toStringAsFixed(1)} km';
+  /// Relative bearing: 0 = straight ahead, +90 = right, -90 = left.
+  double _relativeBearing(ArDestination d) {
+    double r = (_bearingTo(d) - _compassHeading + 360) % 360;
+    if (r > 180) r -= 360;
+    return r;
   }
 
-  // ── Build ────────────────────────────────────────────────────────────────
+  /// Nearest destination by distance.
+  ArDestination get _nearest => widget.destinations.reduce(
+      (a, b) => _distanceTo(a) <= _distanceTo(b) ? a : b);
+
+  String _distLabel(double metres) => metres < 1000
+      ? '${metres.toStringAsFixed(0)} m'
+      : '${(metres / 1000).toStringAsFixed(1)} km';
+
+  // ── Build ────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
+    final nearest = _hasLocation ? _nearest : null;
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // ── Camera background ──────────────────────────────────────────
+          // Camera background
           if (_camReady && _camCtrl != null)
             Positioned.fill(child: CameraPreview(_camCtrl!))
           else if (_camError != null)
-            Positioned.fill(
-              child: ColoredBox(
-                color: Colors.black87,
-                child: Center(
-                  child: Text(_camError!,
-                      style: GoogleFonts.inter(color: Colors.white54)),
-                ),
-              ),
-            )
+            Positioned.fill(child: ColoredBox(
+              color: Colors.black87,
+              child: Center(child: Text(_camError!, style: GoogleFonts.inter(color: Colors.white54))),
+            ))
           else
-            const Positioned.fill(
-              child: ColoredBox(
-                color: Colors.black,
-                child: Center(
-                  child: CircularProgressIndicator(color: Colors.white38),
-                ),
-              ),
-            ),
+            const Positioned.fill(child: ColoredBox(
+              color: Colors.black,
+              child: Center(child: CircularProgressIndicator(color: Colors.white38)),
+            )),
 
-          // ── AR arrow ──────────────────────────────────────────────────
+          // Multi-pin AR overlay
           if (_hasLocation)
             Positioned.fill(
               child: CustomPaint(
-                painter: _ArrowPainter(angleDeg: _relativeBearing),
+                painter: _MultiPinPainter(
+                  destinations: widget.destinations,
+                  relativeBearings: {
+                    for (final d in widget.destinations) d: _relativeBearing(d),
+                  },
+                  distances: {
+                    for (final d in widget.destinations) d: _distanceTo(d),
+                  },
+                  nearest: nearest,
+                ),
               ),
             ),
 
-          // ── Horizon line ──────────────────────────────────────────────
-          if (_hasLocation)
-            Positioned.fill(
-              child: CustomPaint(painter: _HorizonPainter()),
-            ),
-
-          // ── Top bar ───────────────────────────────────────────────────
-          Positioned(
-            top: 0, left: 0, right: 0,
-            child: _TopBar(
-              stationName: widget.stationName,
-              onClose: () => Navigator.pop(context),
-            ),
-          ),
-
-          // ── Acquiring status ──────────────────────────────────────────
+          // GPS acquiring overlay
           if (!_hasLocation)
             Positioned.fill(
               child: Center(
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                   decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
+                      color: Colors.black54, borderRadius: BorderRadius.circular(20)),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const SizedBox(
-                        width: 14, height: 14,
-                        child: CircularProgressIndicator(
-                          color: Colors.white54, strokeWidth: 2,
-                        ),
-                      ),
+                      const SizedBox(width: 14, height: 14,
+                          child: CircularProgressIndicator(color: Colors.white54, strokeWidth: 2)),
                       const SizedBox(width: 10),
                       Text('Acquiring GPS…',
-                          style: GoogleFonts.inter(
-                              color: Colors.white70, fontSize: 14)),
+                          style: GoogleFonts.inter(color: Colors.white70, fontSize: 14)),
                     ],
                   ),
                 ),
               ),
             ),
 
-          // ── Bottom HUD ────────────────────────────────────────────────
+          // Top bar
+          Positioned(
+            top: 0, left: 0, right: 0,
+            child: _TopBar(stationName: widget.stationName, onClose: () => Navigator.pop(context)),
+          ),
+
+          // Bottom HUD
           Positioned(
             bottom: 0, left: 0, right: 0,
             child: _BottomHUD(
-              distanceLabel: _hasLocation ? _distanceLabel : '--',
+              nearest: nearest,
+              distance: nearest != null ? _distLabel(_distanceTo(nearest)) : '--',
               heading: _compassHeading,
-              mode: 'Camera mode',
+              totalPins: widget.destinations.length,
             ),
           ),
         ],
       ),
     );
   }
-
-  @override
-  void dispose() {
-    _camCtrl?.dispose();
-    super.dispose();
-  }
 }
 
-// ── Arrow painter ─────────────────────────────────────────────────────────────
+// ── Multi-pin AR painter ──────────────────────────────────────────────────────
+//
+// Field of view assumed: ±60° visible on screen (horizontal).
+// Pins within ±60° are drawn on the horizon line.
+// Pins outside ±60° show as edge arrows with labels.
 
-class _ArrowPainter extends CustomPainter {
-  final double angleDeg;
-  const _ArrowPainter({required this.angleDeg});
+class _MultiPinPainter extends CustomPainter {
+  final List<ArDestination> destinations;
+  final Map<ArDestination, double> relativeBearings; // -180 to +180
+  final Map<ArDestination, double> distances;         // metres
+  final ArDestination? nearest;
+
+  static const double _fov = 60.0; // degrees visible on each side
+  static const double _horizonRatio = 0.48; // horizon at 48% from top
+
+  _MultiPinPainter({
+    required this.destinations,
+    required this.relativeBearings,
+    required this.distances,
+    required this.nearest,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final cx   = size.width  / 2;
-    final cy   = size.height / 2;
-    final s    = size.shortestSide * 0.18;
-    final rad  = angleDeg * pi / 180;
+    final horizonY = size.height * _horizonRatio;
+    final cx       = size.width / 2;
 
-    final fill = Paint()
-      ..color = const Color(0xFF4285F4).withOpacity(0.85)
-      ..style = PaintingStyle.fill;
-    final stroke = Paint()
-      ..color = Colors.white.withOpacity(0.85)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 4;
-    final glow = Paint()
-      ..color = const Color(0xFF4285F4).withOpacity(0.25)
-      ..style = PaintingStyle.fill
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 24);
+    // Draw horizon line
+    _drawHorizon(canvas, size, horizonY);
 
-    canvas.save();
-    canvas.translate(cx, cy);
-    canvas.rotate(rad);
+    // Separate in-view and off-screen destinations
+    final inView    = <ArDestination>[];
+    final offLeft   = <ArDestination>[];
+    final offRight  = <ArDestination>[];
 
-    final path = Path()
-      ..moveTo(0,            -s)
-      ..lineTo( s * 0.55,    s * 0.25)
-      ..lineTo( s * 0.22,    s * 0.05)
-      ..lineTo( s * 0.22,    s * 0.65)
-      ..lineTo(-s * 0.22,    s * 0.65)
-      ..lineTo(-s * 0.22,    s * 0.05)
-      ..lineTo(-s * 0.55,    s * 0.25)
-      ..close();
+    for (final d in destinations) {
+      final rb = relativeBearings[d]!;
+      if (rb.abs() <= _fov) {
+        inView.add(d);
+      } else if (rb < 0) {
+        offLeft.add(d);
+      } else {
+        offRight.add(d);
+      }
+    }
 
-    canvas.drawPath(path, glow);
-    canvas.drawPath(path, fill);
-    canvas.drawPath(path, stroke);
-    canvas.restore();
+    // Draw in-view pins
+    for (final d in inView) {
+      final rb     = relativeBearings[d]!;
+      final x      = cx + (rb / _fov) * cx;
+      final dist   = distances[d]!;
+      final isNear = d == nearest;
+      _drawPin(canvas, size, x, horizonY, d, dist, isNear);
+    }
+
+    // Draw off-screen edge indicators
+    if (offLeft.isNotEmpty) _drawEdgeIndicator(canvas, size, horizonY, offLeft, isLeft: true);
+    if (offRight.isNotEmpty) _drawEdgeIndicator(canvas, size, horizonY, offRight, isLeft: false);
   }
 
-  @override
-  bool shouldRepaint(_ArrowPainter old) => old.angleDeg != angleDeg;
-}
-
-// ── Horizon line painter ─────────────────────────────────────────────────────
-
-class _HorizonPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
+  void _drawHorizon(Canvas canvas, Size size, double y) {
     final paint = Paint()
-      ..color = Colors.white.withOpacity(0.15)
-      ..strokeWidth = 1.5;
-    const y = 0.5;
-    canvas.drawLine(
-      Offset(size.width * 0.05, size.height * y),
-      Offset(size.width * 0.40, size.height * y),
-      paint,
-    );
-    canvas.drawLine(
-      Offset(size.width * 0.60, size.height * y),
-      Offset(size.width * 0.95, size.height * y),
-      paint,
-    );
-    // Centre crosshair
-    final cp = Paint()
-      ..color = Colors.white.withOpacity(0.3)
-      ..strokeWidth = 1.5;
-    final cx = size.width / 2, cy = size.height / 2;
-    canvas.drawLine(Offset(cx - 12, cy), Offset(cx + 12, cy), cp);
-    canvas.drawLine(Offset(cx, cy - 12), Offset(cx, cy + 12), cp);
+      ..color = Colors.white.withOpacity(0.12)
+      ..strokeWidth = 1;
+    canvas.drawLine(Offset(size.width * 0.05, y), Offset(size.width * 0.40, y), paint);
+    canvas.drawLine(Offset(size.width * 0.60, y), Offset(size.width * 0.95, y), paint);
+
+    // Crosshair
+    final cp = Paint()..color = Colors.white.withOpacity(0.25)..strokeWidth = 1.5;
+    final cx = size.width / 2;
+    canvas.drawLine(Offset(cx - 14, y), Offset(cx + 14, y), cp);
+    canvas.drawLine(Offset(cx, y - 14), Offset(cx, y + 14), cp);
   }
 
+  void _drawPin(Canvas canvas, Size size, double x, double horizonY,
+      ArDestination d, double dist, bool isNearest) {
+    final color  = d.color;
+    final radius = isNearest ? 18.0 : 13.0;
+
+    // Glow
+    if (isNearest) {
+      canvas.drawCircle(
+        Offset(x, horizonY),
+        radius + 10,
+        Paint()
+          ..color = color.withOpacity(0.18)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
+      );
+    }
+
+    // Stem line from horizon down to pin
+    canvas.drawLine(
+      Offset(x, horizonY),
+      Offset(x, horizonY + radius + 4),
+      Paint()..color = color.withOpacity(0.6)..strokeWidth = 2,
+    );
+
+    // Pin circle
+    canvas.drawCircle(Offset(x, horizonY + radius + 4), radius,
+        Paint()..color = color.withOpacity(isNearest ? 0.95 : 0.75)..style = PaintingStyle.fill);
+    canvas.drawCircle(Offset(x, horizonY + radius + 4), radius,
+        Paint()..color = Colors.white.withOpacity(0.9)..style = PaintingStyle.stroke..strokeWidth = isNearest ? 2.5 : 1.5);
+
+    // Train icon (simple dot)
+    canvas.drawCircle(Offset(x, horizonY + radius + 4), radius * 0.35,
+        Paint()..color = Colors.white..style = PaintingStyle.fill);
+
+    // Label above horizon
+    _drawText(canvas, d.label, x, horizonY - 10,
+        color: Colors.white, fontSize: isNearest ? 14 : 12, bold: isNearest);
+    _drawText(canvas, d.sublabel, x, horizonY - 10 - (isNearest ? 20 : 17),
+        color: color, fontSize: isNearest ? 11 : 10, bold: false);
+
+    // Distance below pin
+    _drawText(canvas, _fmtDist(dist), x, horizonY + radius * 2 + 18,
+        color: Colors.white70, fontSize: 11, bold: false);
+  }
+
+  void _drawEdgeIndicator(Canvas canvas, Size size, double horizonY,
+      List<ArDestination> dests, {required bool isLeft}) {
+    final x     = isLeft ? 28.0 : size.width - 28.0;
+    final color = dests.first.color;
+
+    // Arrow triangle
+    final arrowPath = Path();
+    if (isLeft) {
+      arrowPath
+        ..moveTo(x - 10, horizonY)
+        ..lineTo(x + 8,  horizonY - 10)
+        ..lineTo(x + 8,  horizonY + 10)
+        ..close();
+    } else {
+      arrowPath
+        ..moveTo(x + 10, horizonY)
+        ..lineTo(x - 8,  horizonY - 10)
+        ..lineTo(x - 8,  horizonY + 10)
+        ..close();
+    }
+    canvas.drawPath(arrowPath,
+        Paint()..color = color.withOpacity(0.85)..style = PaintingStyle.fill);
+
+    // Count badge
+    if (dests.length > 1) {
+      _drawText(canvas, '${dests.length}', x, horizonY - 24,
+          color: Colors.white70, fontSize: 11, bold: true);
+    }
+  }
+
+  void _drawText(Canvas canvas, String text, double cx, double cy,
+      {required Color color, required double fontSize, required bool bold}) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          color: color,
+          fontSize: fontSize,
+          fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
+          shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: 140);
+    tp.paint(canvas, Offset(cx - tp.width / 2, cy - tp.height / 2));
+  }
+
+  String _fmtDist(double m) =>
+      m < 1000 ? '${m.toStringAsFixed(0)}m' : '${(m / 1000).toStringAsFixed(1)}km';
+
   @override
-  bool shouldRepaint(_HorizonPainter old) => false;
+  bool shouldRepaint(_MultiPinPainter old) => true;
 }
 
 // ── Top bar ───────────────────────────────────────────────────────────────────
@@ -336,16 +410,11 @@ class _TopBar extends StatelessWidget {
               onPressed: onClose,
             ),
             Expanded(
-              child: Text(
-                stationName,
-                style: GoogleFonts.inter(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
-                ),
-                textAlign: TextAlign.center,
-                overflow: TextOverflow.ellipsis,
-              ),
+              child: Text(stationName,
+                  style: GoogleFonts.inter(
+                      fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white),
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis),
             ),
             const SizedBox(width: 48),
           ],
@@ -358,13 +427,16 @@ class _TopBar extends StatelessWidget {
 // ── Bottom HUD ────────────────────────────────────────────────────────────────
 
 class _BottomHUD extends StatelessWidget {
-  final String distanceLabel;
+  final ArDestination? nearest;
+  final String distance;
   final double heading;
-  final String mode;
+  final int totalPins;
+
   const _BottomHUD({
-    required this.distanceLabel,
+    required this.nearest,
+    required this.distance,
     required this.heading,
-    required this.mode,
+    required this.totalPins,
   });
 
   @override
@@ -372,50 +444,69 @@ class _BottomHUD extends StatelessWidget {
     return SafeArea(
       top: false,
       child: Container(
-        color: Colors.black.withOpacity(0.65),
-        padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
+        color: Colors.black.withOpacity(0.70),
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 18),
         child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  distanceLabel,
-                  style: GoogleFonts.inter(
-                    fontSize: 32,
-                    fontWeight: FontWeight.w700,
-                    color: const Color(0xFF4285F4),
-                  ),
-                ),
-                Text(
-                  'to destination',
-                  style: GoogleFonts.inter(fontSize: 12, color: Colors.white38),
-                ),
-              ],
+            // Nearest pin info
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (nearest != null) ...[
+                    Row(
+                      children: [
+                        Container(
+                          width: 10, height: 10,
+                          decoration: BoxDecoration(
+                              color: nearest!.color, shape: BoxShape.circle),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(nearest!.label,
+                            style: GoogleFonts.inter(
+                                fontSize: 13, fontWeight: FontWeight.w600,
+                                color: Colors.white70)),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(nearest!.sublabel,
+                        style: GoogleFonts.inter(fontSize: 11, color: Colors.white38)),
+                  ],
+                  const SizedBox(height: 6),
+                  Text(distance,
+                      style: GoogleFonts.inter(
+                          fontSize: 30, fontWeight: FontWeight.w700,
+                          color: nearest?.color ?? const Color(0xFF4285F4))),
+                  Text('to nearest pin  ·  $totalPins pins total',
+                      style: GoogleFonts.inter(fontSize: 11, color: Colors.white30)),
+                ],
+              ),
             ),
+
+            // Compass
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  '${heading.toStringAsFixed(0)}°',
-                  style: GoogleFonts.inter(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white70,
-                  ),
-                ),
-                Text(
-                  mode,
-                  style: GoogleFonts.inter(fontSize: 11, color: Colors.white30),
-                ),
+                Text('${heading.toStringAsFixed(0)}°',
+                    style: GoogleFonts.inter(
+                        fontSize: 20, fontWeight: FontWeight.w600, color: Colors.white60)),
+                Text(_compassDir(heading),
+                    style: GoogleFonts.inter(fontSize: 12, color: Colors.white30)),
+                const SizedBox(height: 2),
+                Text('Camera AR', style: GoogleFonts.inter(fontSize: 10, color: Colors.white24)),
               ],
             ),
           ],
         ),
       ),
     );
+  }
+
+  String _compassDir(double h) {
+    const dirs = ['N','NE','E','SE','S','SW','W','NW','N'];
+    return dirs[((h + 22.5) / 45).floor() % 8];
   }
 }

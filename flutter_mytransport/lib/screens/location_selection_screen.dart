@@ -155,7 +155,7 @@ class _LocationSelectionScreenState extends State<LocationSelectionScreen> {
       final stations = await _transitService.getNearbyStations(
         loc.latitude,
         loc.longitude,
-        radiusKm: 3,
+        radiusKm: 50,
       );
       if (mounted) {
         setState(() {

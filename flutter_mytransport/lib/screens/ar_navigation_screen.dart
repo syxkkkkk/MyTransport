@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../data/station_entrances.dart';
 import '../services/ar_service.dart';
+import '../services/transit_service.dart';
 import '../theme/app_theme.dart';
 import 'camera_compass_ar_screen.dart';
 
@@ -20,9 +22,12 @@ class ARNavigationScreen extends StatefulWidget {
 }
 
 class _ARNavigationScreenState extends State<ARNavigationScreen> {
-  double _destLat  = 3.1348;
-  double _destLng  = 101.6862;
-  String _destName = 'KL Sentral';
+  double? _destLat;
+  double? _destLng;
+  String? _destName;
+  String? _selectedStationId;
+
+  bool _destinationSet = false;
 
   ArCoreStatus _status    = ArCoreStatus.unknown;
   bool _checking          = true;
@@ -33,9 +38,15 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
     super.didChangeDependencies();
     final args = ModalRoute.of(context)?.settings.arguments;
     if (args is Map) {
-      _destLat  = (args['latitude']    as num?)?.toDouble() ?? _destLat;
-      _destLng  = (args['longitude']   as num?)?.toDouble() ?? _destLng;
-      _destName = (args['stationName'] as String?)          ?? _destName;
+      final lat = (args['latitude']  as num?)?.toDouble();
+      final lng = (args['longitude'] as num?)?.toDouble();
+      final name = args['stationName'] as String?;
+      if (lat != null && lng != null && name != null) {
+        _destLat  = lat;
+        _destLng  = lng;
+        _destName = name;
+        _destinationSet = true;
+      }
     }
     _checkStatus();
   }
@@ -48,11 +59,11 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
   // ── Launch handlers ──────────────────────────────────────────────────────
 
   Future<void> _launchArCore() async {
-    if (_isLaunching) return;
+    if (_isLaunching || !_destinationSet) return;
     setState(() => _isLaunching = true);
     try {
       await ArService.launchARNavigation(
-        latitude: _destLat, longitude: _destLng, stationName: _destName,
+        latitude: _destLat!, longitude: _destLng!, stationName: _destName!,
       );
     } catch (e) {
       if (mounted) {
@@ -66,16 +77,65 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
   }
 
   void _launchCameraCompass() {
+    if (!_destinationSet) return;
+
+    // Try to load per-platform entrance pins for this station.
+    final entranceData = _selectedStationId != null
+        ? getEntrancesForStation(_selectedStationId!)
+        : null;
+
+    final List<ArDestination> destinations;
+    if (entranceData != null && entranceData.entrances.isNotEmpty) {
+      // Multi-pin mode: one AR pin per platform / entrance.
+      destinations = entranceData.entrances
+          .map((e) => ArDestination(
+                label: e.label,
+                sublabel: e.direction,
+                lat: e.lat,
+                lng: e.lng,
+                color: e.pinColor,
+              ))
+          .toList();
+    } else {
+      // Fallback: single pin at station centre.
+      destinations = [
+        ArDestination(
+          label: _destName!,
+          sublabel: 'Transit station',
+          lat: _destLat!,
+          lng: _destLng!,
+          color: const Color(0xFF4285F4),
+        ),
+      ];
+    }
+
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => CameraCompassARScreen(
-          destLat: _destLat,
-          destLng: _destLng,
-          stationName: _destName,
+          stationName: _destName!,
+          destinations: destinations,
         ),
       ),
     );
+  }
+
+  Future<void> _pickDestination() async {
+    final station = await showModalBottomSheet<NearbyStation>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _StationPickerSheet(),
+    );
+    if (station != null) {
+      setState(() {
+        _destLat  = station.latitude;
+        _destLng  = station.longitude;
+        _destName = station.name;
+        _selectedStationId = station.id;
+        _destinationSet = true;
+      });
+    }
   }
 
   // ── Build ────────────────────────────────────────────────────────────────
@@ -112,11 +172,23 @@ class _ARNavigationScreenState extends State<ARNavigationScreen> {
                 const Spacer(),
                 _ModeIcon(status: _status, checking: _checking),
                 const SizedBox(height: 28),
-                _DestinationCard(name: _destName, lat: _destLat, lng: _destLng),
+                if (_destinationSet)
+                  _DestinationCard(name: _destName!, lat: _destLat!, lng: _destLng!)
+                else
+                  _PickDestinationCard(onTap: _pickDestination),
                 const SizedBox(height: 32),
 
                 // ── Action area ────────────────────────────────────────
-                if (_checking)
+                if (!_destinationSet)
+                  _ActionButton(
+                    icon: Icons.place_outlined,
+                    label: 'Choose Destination',
+                    sublabel: 'Select a transit station',
+                    color: const Color(0xFF4285F4),
+                    onTap: _pickDestination,
+                  )
+
+                else if (_checking)
                   _StatusChip(label: 'Checking device…', loading: true)
 
                 else if (_status == ArCoreStatus.supportedInstalled)
@@ -468,6 +540,200 @@ class _InfoFooter extends StatelessWidget {
             .toList(),
       ),
     );
+  }
+}
+
+// ── Pick destination card ─────────────────────────────────────────────────────
+
+class _PickDestinationCard extends StatelessWidget {
+  final VoidCallback onTap;
+  const _PickDestinationCard({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 32),
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: const Color(0xFF4285F4).withOpacity(0.4)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 42, height: 42,
+              decoration: BoxDecoration(
+                color: const Color(0xFF4285F4).withOpacity(0.18),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.place_outlined, color: Color(0xFF4285F4), size: 22),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('No destination set',
+                      style: GoogleFonts.inter(fontSize: 11, color: Colors.white38)),
+                  const SizedBox(height: 2),
+                  Text('Tap to choose a station',
+                      style: GoogleFonts.inter(
+                        fontSize: 15, fontWeight: FontWeight.w600, color: Colors.white70,
+                      )),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right, color: Color(0xFF4285F4), size: 22),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Station picker bottom sheet ───────────────────────────────────────────────
+
+class _StationPickerSheet extends StatefulWidget {
+  const _StationPickerSheet();
+
+  @override
+  State<_StationPickerSheet> createState() => _StationPickerSheetState();
+}
+
+class _StationPickerSheetState extends State<_StationPickerSheet> {
+  final _search = TextEditingController();
+  List<NearbyStation> _all = [];
+  List<NearbyStation> _filtered = [];
+
+  @override
+  void initState() {
+    super.initState();
+    // Load all stations sorted alphabetically
+    _all = TransitService().getAllStations();
+    _filtered = _all;
+  }
+
+  void _onSearch(String q) {
+    final lower = q.toLowerCase();
+    setState(() {
+      _filtered = _all
+          .where((s) =>
+              s.name.toLowerCase().contains(lower) ||
+              s.code.toLowerCase().contains(lower) ||
+              s.lines.any((l) => l.line.name.toLowerCase().contains(lower)))
+          .toList();
+    });
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.85,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      builder: (_, scrollController) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFF0D1B3E),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          children: [
+            // Handle
+            Container(
+              margin: const EdgeInsets.symmetric(vertical: 10),
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Choose Destination',
+                      style: GoogleFonts.inter(
+                        fontSize: 18, fontWeight: FontWeight.w700, color: Colors.white,
+                      )),
+                  const SizedBox(height: 12),
+                  // Search bar
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: TextField(
+                      controller: _search,
+                      onChanged: _onSearch,
+                      style: GoogleFonts.inter(color: Colors.white, fontSize: 14),
+                      decoration: InputDecoration(
+                        hintText: 'Search station or line…',
+                        hintStyle: GoogleFonts.inter(color: Colors.white38, fontSize: 14),
+                        prefixIcon: const Icon(Icons.search, color: Colors.white38, size: 20),
+                        border: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                controller: scrollController,
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                itemCount: _filtered.length,
+                itemBuilder: (_, i) {
+                  final s = _filtered[i];
+                  final lineColor = _hexColor(s.primaryColor);
+                  return ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    leading: Container(
+                      width: 40, height: 40,
+                      decoration: BoxDecoration(
+                        color: lineColor.withOpacity(0.18),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(Icons.train_outlined, color: lineColor, size: 18),
+                    ),
+                    title: Text(s.name,
+                        style: GoogleFonts.inter(
+                          fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white,
+                        )),
+                    subtitle: Text(
+                      s.lines.map((l) => l.line.code).join(' · '),
+                      style: GoogleFonts.inter(fontSize: 11, color: Colors.white38),
+                    ),
+                    trailing: Text(s.code,
+                        style: GoogleFonts.inter(fontSize: 11, color: Colors.white30)),
+                    onTap: () => Navigator.pop(context, s),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Color _hexColor(String hex) {
+    try {
+      return Color(int.parse('FF${hex.replaceFirst('#', '')}', radix: 16));
+    } catch (_) {
+      return AppColors.primary;
+    }
   }
 }
 
