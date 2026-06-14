@@ -129,8 +129,10 @@ class TransitService {
       final code     = shared.first;
       final lineInfo = origin.lines.firstWhere((l) => l.line.code == code).line;
       final (stops, dirName) = _stopsAndDir(code, origin.id, destination.id);
-      final mins  = (stops * 2.5).round() + 3;
-      final fare  = _fare(code, stops);
+      final mins     = (stops * 2.5).round() + 3;
+      final fare     = _fare(code, stops);
+      final detail   = _getStopsList(code, origin.id, destination.id);
+      final platform = _platformLabel(code, origin.id, destination.id);
       return RouteResult(
         found: true,
         originName: origin.name,
@@ -140,7 +142,8 @@ class TransitService {
         segments: [
           RouteSegment(type: SegmentType.ride, title: lineInfo.name,
             subtitle: 'Towards $dirName', lineCode: code,
-            lineColor: lineInfo.color, stops: stops, minutes: mins - 3),
+            lineColor: lineInfo.color, stops: stops, minutes: mins - 3,
+            stopsDetail: detail, boardingPlatform: platform),
           RouteSegment(type: SegmentType.arrive,
             title: 'Arrive at ${destination.name}', subtitle: 'Exit station'),
         ],
@@ -171,8 +174,12 @@ class TransitService {
 
       final (s1, d1) = _stopsAndDir(c1, origin.id, xferId);
       final (s2, d2) = _stopsAndDir(c2, xferId, destination.id);
+      final det1 = _getStopsList(c1, origin.id, xferId);
+      final det2 = _getStopsList(c2, xferId, destination.id);
+      final pl1  = _platformLabel(c1, origin.id, xferId);
+      final pl2  = _platformLabel(c2, xferId, destination.id);
 
-      final mins = (s1 * 2.5 + s2 * 2.5).round() + 8; // +8 for transfer
+      final mins = (s1 * 2.5 + s2 * 2.5).round() + 8;
       final fare = _fare(c1, s1) + _fare(c2, s2);
 
       final candidate = RouteResult(
@@ -184,14 +191,18 @@ class TransitService {
         segments: [
           RouteSegment(type: SegmentType.ride, title: l1.name,
             subtitle: 'Towards $d1', lineCode: c1,
-            lineColor: l1.color, stops: s1, minutes: (s1 * 2.5).round()),
+            lineColor: l1.color, stops: s1, minutes: (s1 * 2.5).round(),
+            stopsDetail: det1, boardingPlatform: pl1),
           RouteSegment(type: SegmentType.transfer,
             title: 'Transfer at $xferName',
             subtitle: 'Change to ${l2.name}',
-            lineCode: c2, lineColor: l2.color, minutes: 5),
+            lineCode: c2, lineColor: l2.color, minutes: 5,
+            transferStationId: xferId,
+            boardingPlatform: pl2),
           RouteSegment(type: SegmentType.ride, title: l2.name,
             subtitle: 'Towards $d2', lineCode: c2,
-            lineColor: l2.color, stops: s2, minutes: (s2 * 2.5).round()),
+            lineColor: l2.color, stops: s2, minutes: (s2 * 2.5).round(),
+            stopsDetail: det2, boardingPlatform: pl2),
           RouteSegment(type: SegmentType.arrive,
             title: 'Arrive at ${destination.name}', subtitle: 'Exit station'),
         ],
@@ -208,12 +219,44 @@ class TransitService {
   // Returns (stopCount, terminusName) for a segment on a line.
   static (int, String) _stopsAndDir(String code, String fromId, String toId) {
     final seq = _kLineSeqs[code];
-    if (seq == null) return (8, toId);
+    if (seq == null) return (8, _nameOf(toId));
     final iA = seq.indexOf(fromId);
     final iB = seq.indexOf(toId);
     if (iA < 0 || iB < 0) return (8, _nameOf(toId));
     final terminus = iB > iA ? seq.last : seq.first;
     return ((iB - iA).abs(), _nameOf(terminus));
+  }
+
+  /// All stations (including origin + destination) in travel order.
+  static List<StationStop> _getStopsList(String code, String fromId, String toId) {
+    final seq = _kLineSeqs[code];
+    if (seq == null) return [];
+    final iA = seq.indexOf(fromId);
+    final iB = seq.indexOf(toId);
+    if (iA < 0 || iB < 0) return [];
+    final start = iA < iB ? iA : iB;
+    final end   = iA < iB ? iB : iA;
+    final ids   = seq.sublist(start, end + 1);
+    final ordered = iA > iB ? ids.reversed.toList() : ids;
+    return ordered.map((id) {
+      try {
+        final raw = _kStations.firstWhere((s) => s['id'] == id);
+        return StationStop(id: id, name: raw['name'] as String,
+            lat: raw['lat'] as double, lng: raw['lng'] as double);
+      } catch (_) { return null; }
+    }).whereType<StationStop>().toList();
+  }
+
+  /// Platform label based on travel direction in the sequence.
+  static String _platformLabel(String code, String fromId, String toId) {
+    final seq = _kLineSeqs[code];
+    if (seq == null) return '';
+    final iA = seq.indexOf(fromId);
+    final iB = seq.indexOf(toId);
+    if (iA < 0 || iB < 0) return '';
+    final labels = _kPlatformLabels[code];
+    if (labels == null) return '';
+    return iB < iA ? labels['dec']! : labels['inc']!;
   }
 
   static String _nameOf(String id) {
@@ -235,6 +278,15 @@ class TransitService {
 
 enum SegmentType { ride, transfer, arrive }
 
+class StationStop {
+  final String id;
+  final String name;
+  final double lat;
+  final double lng;
+  const StationStop({required this.id, required this.name,
+      required this.lat, required this.lng});
+}
+
 class RouteSegment {
   final SegmentType type;
   final String title;
@@ -243,6 +295,12 @@ class RouteSegment {
   final String? lineColor;
   final int? stops;
   final int? minutes;
+  /// All stops in order (including departure + arrival). Non-empty for ride segments.
+  final List<StationStop> stopsDetail;
+  /// e.g. "Platform 1 → Gombak"
+  final String? boardingPlatform;
+  /// Station ID of the transfer point (set on transfer segments).
+  final String? transferStationId;
 
   const RouteSegment({
     required this.type,
@@ -252,6 +310,9 @@ class RouteSegment {
     this.lineColor,
     this.stops,
     this.minutes,
+    this.stopsDetail = const [],
+    this.boardingPlatform,
+    this.transferStationId,
   });
 }
 
@@ -350,6 +411,19 @@ const _erlSeq = [
   'ktm-kl-sentral','mrt-putrajaya-sentral','mrt-salak-tinggi',
   'erl-klia2','erl-klia',
 ];
+
+// Platform labels: 'dec' = travelling toward lower index (seq[0] terminus)
+//                  'inc' = travelling toward higher index (seq[last] terminus)
+const _kPlatformLabels = <String, Map<String, String>>{
+  'LRT-KJ':  {'dec': 'Platform 1 → Gombak',          'inc': 'Platform 2 → Kelana Jaya'},
+  'LRT-AMP': {'dec': 'Platform 1 → Sentul Timur',     'inc': 'Platform 2 → Ampang / Sri Petaling'},
+  'MRT-KJ':  {'dec': 'Platform 1 → Sungai Buloh',     'inc': 'Platform 2 → Kajang'},
+  'MRT-PY':  {'dec': 'Platform 1 → Kwasa Damansara',  'inc': 'Platform 2 → Putrajaya'},
+  'KTM-PK':  {'dec': 'Platform 1 → Port Klang',       'inc': 'Platform 2 → Sungai Buloh'},
+  'KTM-SB':  {'dec': 'Platform 1 → Batu Caves',       'inc': 'Platform 2 → Seremban / Kajang'},
+  'MONO':    {'dec': 'Platform 1 → KL Sentral',       'inc': 'Platform 2 → Titiwangsa'},
+  'ERL':     {'dec': '',                               'inc': 'KLIA Ekspres / KLIA Transit'},
+};
 
 const _kLineSeqs = <String, List<String>>{
   'LRT-KJ':  _lrtKJSeq,
