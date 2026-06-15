@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../services/gtfs_realtime_service.dart';
+import '../services/gtfs_static_schedule_service.dart';
 import '../services/transit_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/bottom_nav_bar.dart';
@@ -79,9 +80,17 @@ class LiveTrainNotificationsScreen extends StatefulWidget {
 
 class _LiveTrainNotificationsScreenState
     extends State<LiveTrainNotificationsScreen> {
+  // ── KTMB live feed ─────────────────────────────────────────────────────────
   AllFeedsResult? _feeds;
   bool _loading = true;
   String? _error;
+
+  // ── Rapid KL scheduled positions ───────────────────────────────────────────
+  List<ScheduledVehicle> _scheduledVehicles = [];
+  bool _gtfsLoading = true;
+  String? _gtfsError;
+  int _scheduledActiveRoutes = 0;
+
   Timer? _refreshTimer;
   DateTime? _lastFetched;
 
@@ -89,13 +98,43 @@ class _LiveTrainNotificationsScreenState
   void initState() {
     super.initState();
     _fetch();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) => _fetch());
+    _fetchGtfsSchedule();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      _fetch();
+      _refreshScheduledVehicles();
+    });
   }
 
   @override
   void dispose() {
     _refreshTimer?.cancel();
     super.dispose();
+  }
+
+  // ── GTFS schedule ──────────────────────────────────────────────────────────
+
+  Future<void> _fetchGtfsSchedule() async {
+    if (!mounted) return;
+    setState(() { _gtfsLoading = true; _gtfsError = null; });
+    try {
+      await GtfsStaticScheduleService.getSchedule();
+      if (!mounted) return;
+      _refreshScheduledVehicles();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _gtfsError = e.toString(); _gtfsLoading = false; });
+    }
+  }
+
+  void _refreshScheduledVehicles() {
+    if (!mounted) return;
+    final vehicles = GtfsStaticScheduleService.computeCurrentVehicles();
+    final routeIds = vehicles.map((v) => v.routeId).toSet();
+    setState(() {
+      _scheduledVehicles     = vehicles;
+      _scheduledActiveRoutes = routeIds.length;
+      _gtfsLoading           = false;
+    });
   }
 
   Future<void> _fetch() async {
@@ -131,13 +170,10 @@ class _LiveTrainNotificationsScreenState
     return Map.fromEntries(sorted);
   }
 
-  int get _totalVehicles =>
-      (_feeds?.ktmb.vehicles.length ?? 0) +
-      (_feeds?.rapidKL?.vehicles.length ?? 0);
+  int get _totalVehicles => _feeds?.ktmb.vehicles.length ?? 0;
 
   int get _movingCount =>
-      (_feeds?.ktmb.vehicles.where((v) => !v.isStopped).length ?? 0) +
-      (_feeds?.rapidKL?.vehicles.where((v) => !v.isStopped).length ?? 0);
+      _feeds?.ktmb.vehicles.where((v) => !v.isStopped).length ?? 0;
 
   @override
   Widget build(BuildContext context) {
@@ -184,9 +220,6 @@ class _LiveTrainNotificationsScreenState
       return _ErrorView(error: _error!, onRetry: _fetch);
 
     final ktmbRoutes = _groupByRoute(_feeds!.ktmb.vehicles);
-    final lrtRoutes  = _feeds?.rapidKL != null
-        ? _groupByRoute(_feeds!.rapidKL!.vehicles)
-        : <String, List<VehiclePositionData>>{};
 
     return RefreshIndicator(
       onRefresh: _fetch,
@@ -198,9 +231,9 @@ class _LiveTrainNotificationsScreenState
           _LiveStatusHeader(
             totalVehicles: _totalVehicles,
             movingCount: _movingCount,
+            scheduledCount: _scheduledVehicles.length,
             lastFetched: _lastFetched,
             hasError: _error != null,
-            operatorCount: _feeds?.rapidKL != null ? 2 : 1,
           ),
           const SizedBox(height: 16),
 
@@ -208,7 +241,7 @@ class _LiveTrainNotificationsScreenState
           const _InfoBanner(),
           const SizedBox(height: 20),
 
-          // ── KTMB section ──────────────────────────────────────────────────
+          // ── KTMB section ─────────────────────────────────────────────────
           _SectionHeader(
             label: 'KTMB Active Trains',
             routeCount: ktmbRoutes.length,
@@ -223,46 +256,26 @@ class _LiveTrainNotificationsScreenState
                   child: _RouteCard(routeId: e.key, vehicles: e.value),
                 )),
 
-          // ── Rapid KL section ──────────────────────────────────────────────
-          if (_feeds?.rapidKL != null) ...[
-            const SizedBox(height: 8),
-            _SectionHeader(
-              label: 'Rapid KL Active Trains',
-              routeCount: lrtRoutes.length,
-              color: const Color(0xFFE32026),
-              subtitle: 'LRT · MRT · Monorail',
-            ),
-            const SizedBox(height: 12),
-            if (lrtRoutes.isEmpty)
-              const _EmptyState(message: 'No active Rapid KL trains')
-            else
-              ...lrtRoutes.entries.map((e) => Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: _RouteCard(routeId: e.key, vehicles: e.value),
-                  )),
-          ] else if (_feeds?.rapidKLError != null) ...[
-            const SizedBox(height: 8),
-            _SectionHeader(
-              label: 'Rapid KL',
-              routeCount: 0,
-              color: const Color(0xFFE32026),
-            ),
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.orange.shade50,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.orange.shade200),
-              ),
-              child: Row(children: [
-                Icon(Icons.warning_amber_rounded, size: 16, color: Colors.orange.shade700),
-                const SizedBox(width: 8),
-                Expanded(child: Text('Rapid KL data temporarily unavailable',
-                    style: GoogleFonts.inter(fontSize: 12, color: Colors.orange.shade800))),
-              ]),
-            ),
-          ],
+          // ── Rapid KL scheduled section ────────────────────────────────────
+          const SizedBox(height: 20),
+          _SectionHeader(
+            label: 'LRT · MRT · Monorail',
+            routeCount: _scheduledActiveRoutes,
+            color: const Color(0xFFE32026),
+            subtitle: 'Rapid KL — Schedule-based positions',
+          ),
+          const SizedBox(height: 12),
+          if (_gtfsLoading)
+            const _ScheduleLoadingCard()
+          else if (_gtfsError != null)
+            _ScheduleErrorCard(
+              error: _gtfsError!,
+              onRetry: _fetchGtfsSchedule,
+            )
+          else if (_scheduledVehicles.isEmpty)
+            const _EmptyState(message: 'No active trains right now')
+          else
+            _ScheduledSection(vehicles: _scheduledVehicles),
         ],
       ),
     );
@@ -315,16 +328,16 @@ class _SectionHeader extends StatelessWidget {
 class _LiveStatusHeader extends StatelessWidget {
   final int totalVehicles;
   final int movingCount;
+  final int scheduledCount;
   final DateTime? lastFetched;
   final bool hasError;
-  final int operatorCount;
 
   const _LiveStatusHeader({
     required this.totalVehicles,
     required this.movingCount,
+    required this.scheduledCount,
     required this.lastFetched,
     required this.hasError,
-    required this.operatorCount,
   });
 
   String get _updatedLabel {
@@ -363,11 +376,17 @@ class _LiveStatusHeader extends StatelessWidget {
               '$movingCount in transit · ${totalVehicles - movingCount} stopped',
               style: GoogleFonts.inter(fontSize: 12, color: AppColors.onSurfaceVariant),
             ),
+            if (scheduledCount > 0)
+              Text(
+                '+ $scheduledCount Rapid KL (scheduled est.)',
+                style: GoogleFonts.inter(
+                    fontSize: 11, color: const Color(0xFFE32026)),
+              ),
           ]),
         ),
         Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
           Text(
-            operatorCount == 1 ? 'KTMB' : 'KTMB + Rapid KL',
+            'KTMB',
             style: GoogleFonts.inter(
                 fontSize: 11, fontWeight: FontWeight.w700,
                 letterSpacing: 0.4, color: AppColors.primary),
@@ -442,8 +461,9 @@ class _InfoBanner extends StatelessWidget {
         const SizedBox(width: 10),
         Expanded(
           child: Text(
-            'Destinations shown are based on live GTFS direction data. '
-            'Service alerts & exact platform info coming via Malaysia\'s GTFS feed in 2026.',
+            'KTMB: live GPS via data.gov.my · '
+            'LRT/MRT/Monorail: estimated from Prasarana GTFS timetable · '
+            'Updates every 30 s',
             style: GoogleFonts.inter(
                 fontSize: 12, color: Colors.blue.shade800, height: 1.4),
           ),
@@ -698,6 +718,306 @@ class _VehicleRow extends StatelessWidget {
               style: GoogleFonts.inter(fontSize: 9, color: AppColors.outline),
             ),
         ]),
+      ]),
+    );
+  }
+}
+
+// ── Schedule loading / error cards ────────────────────────────────────────────
+
+class _ScheduleLoadingCard extends StatelessWidget {
+  const _ScheduleLoadingCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.outlineVariant),
+      ),
+      child: Row(children: [
+        const SizedBox(
+          width: 20, height: 20,
+          child: CircularProgressIndicator(
+              strokeWidth: 2, color: Color(0xFFE32026)),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Downloading Prasarana schedule…',
+                style: GoogleFonts.inter(
+                    fontSize: 13, fontWeight: FontWeight.w500,
+                    color: AppColors.onSurface)),
+            const SizedBox(height: 2),
+            Text('LRT/MRT timetable from data.gov.my (~10 s)',
+                style: GoogleFonts.inter(
+                    fontSize: 11, color: AppColors.onSurfaceVariant)),
+          ]),
+        ),
+      ]),
+    );
+  }
+}
+
+class _ScheduleErrorCard extends StatelessWidget {
+  final String error;
+  final VoidCallback onRetry;
+  const _ScheduleErrorCard({required this.error, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.red.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.red.shade200),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(Icons.error_outline, size: 18, color: Colors.red.shade600),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text('Could not load Rapid KL schedule',
+                style: GoogleFonts.inter(
+                    fontSize: 13, fontWeight: FontWeight.w600,
+                    color: Colors.red.shade800)),
+          ),
+        ]),
+        const SizedBox(height: 6),
+        Text(error,
+            style: GoogleFonts.inter(
+                fontSize: 11, color: Colors.red.shade700),
+            maxLines: 2, overflow: TextOverflow.ellipsis),
+        const SizedBox(height: 10),
+        TextButton.icon(
+          onPressed: onRetry,
+          icon: const Icon(Icons.refresh, size: 14),
+          label: const Text('Retry'),
+          style: TextButton.styleFrom(
+              foregroundColor: Colors.red.shade700,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4)),
+        ),
+      ]),
+    );
+  }
+}
+
+// ── Scheduled section (groups by route) ──────────────────────────────────────
+
+class _ScheduledSection extends StatelessWidget {
+  final List<ScheduledVehicle> vehicles;
+  const _ScheduledSection({required this.vehicles});
+
+  @override
+  Widget build(BuildContext context) {
+    // Group by routeId, sorted by count desc
+    final grouped = <String, List<ScheduledVehicle>>{};
+    for (final v in vehicles) {
+      grouped.putIfAbsent(v.routeId, () => []).add(v);
+    }
+    final sorted = grouped.entries.toList()
+      ..sort((a, b) => b.value.length.compareTo(a.value.length));
+
+    return Column(
+      children: sorted.map((e) => Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: _ScheduledRouteCard(routeId: e.key, vehicles: e.value),
+      )).toList(),
+    );
+  }
+}
+
+class _ScheduledRouteCard extends StatefulWidget {
+  final String routeId;
+  final List<ScheduledVehicle> vehicles;
+  const _ScheduledRouteCard({required this.routeId, required this.vehicles});
+
+  @override
+  State<_ScheduledRouteCard> createState() => _ScheduledRouteCardState();
+}
+
+class _ScheduledRouteCardState extends State<_ScheduledRouteCard> {
+  bool _expanded = false;
+
+  Color _parseColor(String hex) {
+    if (hex.isEmpty) return const Color(0xFFE32026);
+    try { return Color(int.parse('FF$hex', radix: 16)); }
+    catch (_) { return const Color(0xFFE32026); }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sample  = widget.vehicles.first;
+    final color   = _parseColor(sample.routeColor);
+    final shown   = _expanded
+        ? widget.vehicles
+        : widget.vehicles.take(4).toList();
+
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.outlineVariant),
+        boxShadow: [BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 6, offset: const Offset(0, 2))],
+      ),
+      clipBehavior: Clip.hardEdge,
+      child: IntrinsicHeight(
+        child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Container(width: 5, color: color),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                // Header
+                Row(children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                        color: color.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(20)),
+                    child: Text(
+                      sample.routeLongName.isNotEmpty
+                          ? sample.routeLongName
+                          : sample.routeShortName,
+                      style: GoogleFonts.inter(
+                          fontSize: 11, fontWeight: FontWeight.w700,
+                          color: color),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  // SCH badge
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                    decoration: BoxDecoration(
+                        color: Colors.amber.shade100,
+                        borderRadius: BorderRadius.circular(4)),
+                    child: Text('SCH',
+                        style: GoogleFonts.inter(
+                            fontSize: 9, fontWeight: FontWeight.w700,
+                            color: Colors.amber.shade800)),
+                  ),
+                  const Spacer(),
+                  Icon(Icons.train_outlined, size: 12,
+                      color: AppColors.onSurfaceVariant),
+                  const SizedBox(width: 3),
+                  Text('${widget.vehicles.length}',
+                      style: GoogleFonts.inter(
+                          fontSize: 11, color: AppColors.onSurfaceVariant)),
+                  const SizedBox(width: 4),
+                  Container(width: 7, height: 7,
+                      decoration: const BoxDecoration(
+                          shape: BoxShape.circle, color: Color(0xFF34A853))),
+                  const SizedBox(width: 3),
+                  Text('moving',
+                      style: GoogleFonts.inter(
+                          fontSize: 11, fontWeight: FontWeight.w600,
+                          color: const Color(0xFF34A853))),
+                ]),
+                const SizedBox(height: 10),
+                // Vehicle rows
+                ...shown.map((v) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: _ScheduledVehicleRow(vehicle: v, color: color),
+                    )),
+                if (widget.vehicles.length > 4)
+                  GestureDetector(
+                    onTap: () => setState(() => _expanded = !_expanded),
+                    child: Text(
+                      _expanded
+                          ? 'Show fewer'
+                          : '+${widget.vehicles.length - 4} more trains',
+                      style: GoogleFonts.inter(
+                          fontSize: 11, color: AppColors.primary,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ),
+              ]),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+class _ScheduledVehicleRow extends StatelessWidget {
+  final ScheduledVehicle vehicle;
+  final Color color;
+  const _ScheduledVehicleRow({required this.vehicle, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.surfaceVariant),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(
+            width: 28, height: 28,
+            decoration: BoxDecoration(
+                color: color.withOpacity(0.12), shape: BoxShape.circle),
+            child: Icon(Icons.directions_railway, size: 14, color: color),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              // Headsign (destination)
+              Row(children: [
+                Icon(Icons.arrow_forward, size: 11, color: color),
+                const SizedBox(width: 3),
+                Expanded(
+                  child: Text(
+                    vehicle.headsign.isNotEmpty
+                        ? vehicle.headsign
+                        : (vehicle.directionId == 0 ? 'Outbound' : 'Inbound'),
+                    style: GoogleFonts.inter(
+                        fontSize: 12, fontWeight: FontWeight.w600, color: color),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 2),
+              // Current location
+              Text(
+                vehicle.locationLabel,
+                style: GoogleFonts.inter(
+                    fontSize: 11, color: AppColors.onSurfaceVariant),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ]),
+          ),
+          const SizedBox(width: 8),
+          // Time to next stop
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(vehicle.minutesToNext,
+                style: GoogleFonts.inter(
+                    fontSize: 13, fontWeight: FontWeight.w700,
+                    color: AppColors.primary)),
+            Text('next stop',
+                style: GoogleFonts.inter(
+                    fontSize: 9, color: AppColors.outline)),
+          ]),
+        ]),
+        // Progress bar
+        const SizedBox(height: 6),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(2),
+          child: LinearProgressIndicator(
+            value: vehicle.progressFraction,
+            minHeight: 3,
+            backgroundColor: color.withOpacity(0.12),
+            valueColor: AlwaysStoppedAnimation<Color>(color),
+          ),
+        ),
       ]),
     );
   }

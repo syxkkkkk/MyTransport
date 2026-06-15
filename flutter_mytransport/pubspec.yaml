@@ -14,6 +14,7 @@ dependencies:
 
   # Networking
   http: ^1.2.1
+  archive: ^3.6.1
 
   # Maps
   google_maps_flutter: ^2.9.0
