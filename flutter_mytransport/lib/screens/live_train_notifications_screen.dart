@@ -2,8 +2,72 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../services/gtfs_realtime_service.dart';
+import '../services/transit_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/bottom_nav_bar.dart';
+
+// ── Route info lookup ─────────────────────────────────────────────────────────
+// Maps known routeId patterns → (display name, [dir0 terminus, dir1 terminus])
+
+class _RouteInfo {
+  final String name;
+  final Color color;
+  final List<String> termini; // [direction-0 destination, direction-1 destination]
+  const _RouteInfo(this.name, this.color, this.termini);
+}
+
+/// Case-insensitive partial-match lookup for a routeId.
+_RouteInfo _routeInfo(String routeId) {
+  final id = routeId.toUpperCase();
+
+  // ── KTMB ──────────────────────────────────────────────────────────────────
+  if (id.contains('PK') || id.contains('PORT') || id.contains('KLANG'))
+    return _RouteInfo('Port Klang Line', const Color(0xFF00843D), ['Port Klang', 'Sungai Buloh']);
+  if (id.contains('SB') || id.contains('SEREMBAN'))
+    return _RouteInfo('Seremban Line', const Color(0xFFCC0000), ['Seremban', 'Batu Caves']);
+  if (id.contains('ETS'))
+    return _RouteInfo('ETS Intercity', const Color(0xFF1565C0), ['Gemas', 'Padang Besar']);
+  if (id.contains('KTM') || id.contains('KOMUTER'))
+    return _RouteInfo('KTM Komuter', const Color(0xFF00843D), ['Southbound', 'Northbound']);
+
+  // ── Rapid KL LRT ──────────────────────────────────────────────────────────
+  if (id.contains('KJ') || id.contains('KELANA'))
+    return _RouteInfo('LRT Kelana Jaya', const Color(0xFFE32026), ['Kelana Jaya', 'Gombak']);
+  if (id.contains('AG') || id.contains('AMPANG') || id.contains('SRI-P') || id.contains('SP'))
+    return _RouteInfo('LRT Ampang/Sri Petaling', const Color(0xFF8B008B), ['Sentul Timur', 'Sri Petaling / Ampang']);
+
+  // ── Rapid KL MRT ──────────────────────────────────────────────────────────
+  if (id.contains('KG') || id.contains('KAJANG'))
+    return _RouteInfo('MRT Kajang Line', const Color(0xFF009A44), ['Kajang', 'Sungai Buloh']);
+  if (id.contains('PY') || id.contains('PUTRAJAYA'))
+    return _RouteInfo('MRT Putrajaya Line', const Color(0xFF78BE20), ['Kwasa Damansara', 'Putrajaya']);
+
+  // ── Rapid KL Monorail ─────────────────────────────────────────────────────
+  if (id.contains('MR') || id.contains('MONO'))
+    return _RouteInfo('KL Monorail', const Color(0xFFE60000), ['KL Sentral', 'Titiwangsa']);
+
+  // ── BRT ───────────────────────────────────────────────────────────────────
+  if (id.contains('BRT') || id.contains('SUNWAY'))
+    return _RouteInfo('BRT Sunway', const Color(0xFFFF6600), ['Sunway', 'USJ 7']);
+
+  // Fallback: use raw routeId with generic color
+  return _RouteInfo(
+    routeId.isNotEmpty ? routeId : 'Unknown Route',
+    AppColors.primary,
+    ['Terminus A', 'Terminus B'],
+  );
+}
+
+/// Infer direction from trip_id string (used as fallback when directionId absent).
+/// Rapid KL trip IDs often contain "-U-" (up) or "-D-" (down).
+int? _inferDirectionFromTripId(String tripId) {
+  final t = tripId.toUpperCase();
+  if (t.contains('-U-') || t.contains('_UP_') || t.endsWith('_UP')) return 0;
+  if (t.contains('-D-') || t.contains('_DN_') || t.endsWith('_DN')) return 1;
+  return null;
+}
+
+// ── Screen ────────────────────────────────────────────────────────────────────
 
 class LiveTrainNotificationsScreen extends StatefulWidget {
   const LiveTrainNotificationsScreen({super.key});
@@ -15,7 +79,7 @@ class LiveTrainNotificationsScreen extends StatefulWidget {
 
 class _LiveTrainNotificationsScreenState
     extends State<LiveTrainNotificationsScreen> {
-  GtfsFeed? _feed;
+  AllFeedsResult? _feeds;
   bool _loading = true;
   String? _error;
   Timer? _refreshTimer;
@@ -25,7 +89,6 @@ class _LiveTrainNotificationsScreenState
   void initState() {
     super.initState();
     _fetch();
-    // Auto-refresh every 30 seconds (matches API update cadence)
     _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) => _fetch());
   }
 
@@ -37,32 +100,28 @@ class _LiveTrainNotificationsScreenState
 
   Future<void> _fetch() async {
     if (!mounted) return;
-    setState(() { _error = null; _loading = _feed == null; });
+    setState(() { _error = null; _loading = _feeds == null; });
     try {
-      final feed = await GtfsRealtimeService.fetchKtmbVehicles();
+      final feeds = await GtfsRealtimeService.fetchAllOperators();
       if (!mounted) return;
       setState(() {
-        _feed = feed;
+        _feeds = feeds;
         _loading = false;
         _lastFetched = DateTime.now();
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
+      setState(() { _error = e.toString(); _loading = false; });
     }
   }
 
-  // Group vehicles by route, sorted by route id
-  Map<String, List<VehiclePositionData>> get _byRoute {
+  // Group vehicles by routeId; empty routeId → 'ktmb-komuter'
+  Map<String, List<VehiclePositionData>> _groupByRoute(List<VehiclePositionData> vehicles) {
     final map = <String, List<VehiclePositionData>>{};
-    for (final v in (_feed?.vehicles ?? [])) {
-      final key = v.routeId.isNotEmpty ? v.routeId : 'Unknown';
+    for (final v in vehicles) {
+      final key = v.routeId.isNotEmpty ? v.routeId : 'ktmb-komuter';
       map.putIfAbsent(key, () => []).add(v);
     }
-    // Sort: active (in-transit) routes first
     final sorted = map.entries.toList()
       ..sort((a, b) {
         final aMoving = a.value.where((v) => !v.isStopped).length;
@@ -71,6 +130,14 @@ class _LiveTrainNotificationsScreenState
       });
     return Map.fromEntries(sorted);
   }
+
+  int get _totalVehicles =>
+      (_feeds?.ktmb.vehicles.length ?? 0) +
+      (_feeds?.rapidKL?.vehicles.length ?? 0);
+
+  int get _movingCount =>
+      (_feeds?.ktmb.vehicles.where((v) => !v.isStopped).length ?? 0) +
+      (_feeds?.rapidKL?.vehicles.where((v) => !v.isStopped).length ?? 0);
 
   @override
   Widget build(BuildContext context) {
@@ -96,15 +163,11 @@ class _LiveTrainNotificationsScreenState
         centerTitle: true,
         actions: [
           IconButton(
-            icon: _loading && _feed != null
+            icon: _loading && _feeds != null
                 ? const SizedBox(
-                    width: 18,
-                    height: 18,
+                    width: 18, height: 18,
                     child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: AppColors.primary,
-                    ),
-                  )
+                        strokeWidth: 2, color: AppColors.primary))
                 : const Icon(Icons.refresh, color: AppColors.primary),
             onPressed: _fetch,
           ),
@@ -117,11 +180,13 @@ class _LiveTrainNotificationsScreenState
 
   Widget _buildBody() {
     if (_loading) return const _LoadingView();
-    if (_error != null && _feed == null) return _ErrorView(error: _error!, onRetry: _fetch);
+    if (_error != null && _feeds == null)
+      return _ErrorView(error: _error!, onRetry: _fetch);
 
-    final routes = _byRoute;
-    final totalVehicles = _feed?.vehicles.length ?? 0;
-    final movingCount = _feed?.vehicles.where((v) => !v.isStopped).length ?? 0;
+    final ktmbRoutes = _groupByRoute(_feeds!.ktmb.vehicles);
+    final lrtRoutes  = _feeds?.rapidKL != null
+        ? _groupByRoute(_feeds!.rapidKL!.vehicles)
+        : <String, List<VehiclePositionData>>{};
 
     return RefreshIndicator(
       onRefresh: _fetch,
@@ -129,57 +194,118 @@ class _LiveTrainNotificationsScreenState
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
         children: [
-          // ── Live status header ──────────────────────────────────────────
+          // ── Live status header ────────────────────────────────────────────
           _LiveStatusHeader(
-            totalVehicles: totalVehicles,
-            movingCount: movingCount,
+            totalVehicles: _totalVehicles,
+            movingCount: _movingCount,
             lastFetched: _lastFetched,
             hasError: _error != null,
+            operatorCount: _feeds?.rapidKL != null ? 2 : 1,
           ),
           const SizedBox(height: 16),
 
-          // ── Alerts note (service alerts not yet in API) ─────────────────
-          const _AlertsComingSoonBanner(),
+          // ── Info banner ───────────────────────────────────────────────────
+          const _InfoBanner(),
           const SizedBox(height: 20),
 
-          // ── Section header ──────────────────────────────────────────────
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'KTMB Active Trains',
-                style: GoogleFonts.inter(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.onSurface,
-                ),
-              ),
-              Text(
-                '${routes.length} route${routes.length == 1 ? '' : 's'}',
-                style: GoogleFonts.inter(
-                  fontSize: 12,
-                  color: AppColors.onSurfaceVariant,
-                ),
-              ),
-            ],
+          // ── KTMB section ──────────────────────────────────────────────────
+          _SectionHeader(
+            label: 'KTMB Active Trains',
+            routeCount: ktmbRoutes.length,
+            color: const Color(0xFF00843D),
           ),
           const SizedBox(height: 12),
-
-          // ── Empty state ─────────────────────────────────────────────────
-          if (routes.isEmpty)
-            const _EmptyState()
+          if (ktmbRoutes.isEmpty)
+            const _EmptyState(message: 'No active KTMB trains')
           else
-            ...routes.entries.map((entry) {
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: _RouteCard(
-                  routeId: entry.key,
-                  vehicles: entry.value,
-                ),
-              );
-            }),
+            ...ktmbRoutes.entries.map((e) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: _RouteCard(routeId: e.key, vehicles: e.value),
+                )),
+
+          // ── Rapid KL section ──────────────────────────────────────────────
+          if (_feeds?.rapidKL != null) ...[
+            const SizedBox(height: 8),
+            _SectionHeader(
+              label: 'Rapid KL Active Trains',
+              routeCount: lrtRoutes.length,
+              color: const Color(0xFFE32026),
+              subtitle: 'LRT · MRT · Monorail',
+            ),
+            const SizedBox(height: 12),
+            if (lrtRoutes.isEmpty)
+              const _EmptyState(message: 'No active Rapid KL trains')
+            else
+              ...lrtRoutes.entries.map((e) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _RouteCard(routeId: e.key, vehicles: e.value),
+                  )),
+          ] else if (_feeds?.rapidKLError != null) ...[
+            const SizedBox(height: 8),
+            _SectionHeader(
+              label: 'Rapid KL',
+              routeCount: 0,
+              color: const Color(0xFFE32026),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.orange.shade200),
+              ),
+              child: Row(children: [
+                Icon(Icons.warning_amber_rounded, size: 16, color: Colors.orange.shade700),
+                const SizedBox(width: 8),
+                Expanded(child: Text('Rapid KL data temporarily unavailable',
+                    style: GoogleFonts.inter(fontSize: 12, color: Colors.orange.shade800))),
+              ]),
+            ),
+          ],
         ],
       ),
+    );
+  }
+}
+
+// ── Section header ────────────────────────────────────────────────────────────
+
+class _SectionHeader extends StatelessWidget {
+  final String label;
+  final int routeCount;
+  final Color color;
+  final String? subtitle;
+
+  const _SectionHeader({
+    required this.label,
+    required this.routeCount,
+    required this.color,
+    this.subtitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Container(width: 4, height: 20, decoration: BoxDecoration(
+          color: color, borderRadius: BorderRadius.circular(2))),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(label, style: GoogleFonts.inter(
+                fontSize: 16, fontWeight: FontWeight.w700, color: AppColors.onSurface)),
+            if (subtitle != null)
+              Text(subtitle!, style: GoogleFonts.inter(
+                  fontSize: 11, color: AppColors.onSurfaceVariant)),
+          ]),
+        ),
+        Text(
+          routeCount == 1 ? '1 route' : '$routeCount routes',
+          style: GoogleFonts.inter(fontSize: 12, color: AppColors.onSurfaceVariant),
+        ),
+      ],
     );
   }
 }
@@ -191,12 +317,14 @@ class _LiveStatusHeader extends StatelessWidget {
   final int movingCount;
   final DateTime? lastFetched;
   final bool hasError;
+  final int operatorCount;
 
   const _LiveStatusHeader({
     required this.totalVehicles,
     required this.movingCount,
     required this.lastFetched,
     required this.hasError,
+    required this.operatorCount,
   });
 
   String get _updatedLabel {
@@ -212,71 +340,43 @@ class _LiveStatusHeader extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            AppColors.primary.withOpacity(0.12),
-            AppColors.primary.withOpacity(0.05),
-          ],
-        ),
+        gradient: LinearGradient(colors: [
+          AppColors.primary.withOpacity(0.12),
+          AppColors.primary.withOpacity(0.05),
+        ]),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppColors.primary.withOpacity(0.2)),
       ),
-      child: Row(
-        children: [
-          // Live dot
-          _LiveDot(active: !hasError),
-          const SizedBox(width: 12),
-
-          // Counts
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '$totalVehicles vehicle${totalVehicles == 1 ? '' : 's'} tracked',
-                  style: GoogleFonts.inter(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.onSurface,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '$movingCount in transit · ${totalVehicles - movingCount} stopped',
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    color: AppColors.onSurfaceVariant,
-                  ),
-                ),
-              ],
+      child: Row(children: [
+        _LiveDot(active: !hasError),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+              '$totalVehicles vehicle${totalVehicles == 1 ? '' : 's'} tracked',
+              style: GoogleFonts.inter(
+                  fontSize: 15, fontWeight: FontWeight.w700,
+                  color: AppColors.onSurface),
             ),
+            const SizedBox(height: 2),
+            Text(
+              '$movingCount in transit · ${totalVehicles - movingCount} stopped',
+              style: GoogleFonts.inter(fontSize: 12, color: AppColors.onSurfaceVariant),
+            ),
+          ]),
+        ),
+        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text(
+            operatorCount == 1 ? 'KTMB' : 'KTMB + Rapid KL',
+            style: GoogleFonts.inter(
+                fontSize: 11, fontWeight: FontWeight.w700,
+                letterSpacing: 0.4, color: AppColors.primary),
           ),
-
-          // Last updated
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                'KTMB',
-                style: GoogleFonts.inter(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.6,
-                  color: AppColors.primary,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                _updatedLabel,
-                style: GoogleFonts.inter(
-                  fontSize: 11,
-                  color: AppColors.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
+          const SizedBox(height: 2),
+          Text(_updatedLabel,
+              style: GoogleFonts.inter(fontSize: 11, color: AppColors.onSurfaceVariant)),
+        ]),
+      ]),
     );
   }
 }
@@ -296,20 +396,14 @@ class _LiveDotState extends State<_LiveDot> with SingleTickerProviderStateMixin 
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1000),
-    )..repeat(reverse: true);
+    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000))
+      ..repeat(reverse: true);
     _scale = Tween<double>(begin: 0.8, end: 1.2).animate(
-      CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
-    );
+        CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
   }
 
   @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
+  void dispose() { _ctrl.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
@@ -317,11 +411,9 @@ class _LiveDotState extends State<_LiveDot> with SingleTickerProviderStateMixin 
     return ScaleTransition(
       scale: _scale,
       child: Container(
-        width: 12,
-        height: 12,
+        width: 12, height: 12,
         decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: color,
+          shape: BoxShape.circle, color: color,
           boxShadow: widget.active
               ? [BoxShadow(color: color.withOpacity(0.5), blurRadius: 6, spreadRadius: 2)]
               : null,
@@ -331,10 +423,10 @@ class _LiveDotState extends State<_LiveDot> with SingleTickerProviderStateMixin 
   }
 }
 
-// ── Alerts coming-soon banner ─────────────────────────────────────────────────
+// ── Info banner ───────────────────────────────────────────────────────────────
 
-class _AlertsComingSoonBanner extends StatelessWidget {
-  const _AlertsComingSoonBanner();
+class _InfoBanner extends StatelessWidget {
+  const _InfoBanner();
 
   @override
   Widget build(BuildContext context) {
@@ -345,64 +437,50 @@ class _AlertsComingSoonBanner extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.blue.shade100),
       ),
-      child: Row(
-        children: [
-          Icon(Icons.info_outline, size: 18, color: Colors.blue.shade600),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              'Service alerts & departure times are coming in 2026 via Malaysia\'s GTFS Realtime feed.',
-              style: GoogleFonts.inter(
-                fontSize: 12,
-                color: Colors.blue.shade800,
-                height: 1.4,
-              ),
-            ),
+      child: Row(children: [
+        Icon(Icons.info_outline, size: 18, color: Colors.blue.shade600),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            'Destinations shown are based on live GTFS direction data. '
+            'Service alerts & exact platform info coming via Malaysia\'s GTFS feed in 2026.',
+            style: GoogleFonts.inter(
+                fontSize: 12, color: Colors.blue.shade800, height: 1.4),
           ),
-        ],
-      ),
+        ),
+      ]),
     );
   }
 }
 
 // ── Route card ────────────────────────────────────────────────────────────────
 
-class _RouteCard extends StatelessWidget {
+class _RouteCard extends StatefulWidget {
   final String routeId;
   final List<VehiclePositionData> vehicles;
-
   const _RouteCard({required this.routeId, required this.vehicles});
 
-  // Pick a consistent color per route
-  Color get _routeColor {
-    final colors = [
-      AppColors.primary,
-      const Color(0xFF34A853),
-      const Color(0xFFFBBC04),
-      const Color(0xFFEA4335),
-      const Color(0xFF9C27B0),
-      const Color(0xFF00BCD4),
-    ];
-    return colors[routeId.hashCode.abs() % colors.length];
-  }
+  @override
+  State<_RouteCard> createState() => _RouteCardState();
+}
+
+class _RouteCardState extends State<_RouteCard> {
+  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
-    final moving = vehicles.where((v) => !v.isStopped).length;
-    final color = _routeColor;
+    final info    = _routeInfo(widget.routeId);
+    final moving  = widget.vehicles.where((v) => !v.isStopped).length;
+    // Show first 5 or all if expanded
+    final shown   = _expanded ? widget.vehicles : widget.vehicles.take(5).toList();
 
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: AppColors.outlineVariant),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
-        ],
+        boxShadow: [BoxShadow(
+            color: Colors.black.withOpacity(0.05), blurRadius: 6, offset: const Offset(0, 2))],
       ),
       clipBehavior: Clip.hardEdge,
       child: IntrinsicHeight(
@@ -410,68 +488,56 @@ class _RouteCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Color bar
-            Container(width: 5, color: color),
+            Container(width: 5, color: info.color),
 
             // Content
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Header row
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: color.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            routeId,
-                            style: GoogleFonts.inter(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: 0.4,
-                              color: color,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Icon(Icons.train_outlined,
-                            size: 13, color: AppColors.onSurfaceVariant),
-                        const SizedBox(width: 3),
-                        Text(
-                          '${vehicles.length} train${vehicles.length == 1 ? '' : 's'}',
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  // Header row
+                  Row(children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                          color: info.color.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(20)),
+                      child: Text(info.name,
                           style: GoogleFonts.inter(
-                            fontSize: 11,
-                            color: AppColors.onSurfaceVariant,
-                          ),
-                        ),
-                        const Spacer(),
-                        _MovingBadge(count: moving, total: vehicles.length),
-                      ],
+                              fontSize: 11, fontWeight: FontWeight.w700,
+                              letterSpacing: 0.3, color: info.color)),
                     ),
-                    const SizedBox(height: 10),
-
-                    // Vehicle rows (show up to 5)
-                    ...vehicles.take(5).map((v) => Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
-                          child: _VehicleRow(vehicle: v),
-                        )),
-
-                    if (vehicles.length > 5)
-                      Text(
-                        '+${vehicles.length - 5} more trains',
+                    const SizedBox(width: 8),
+                    Icon(Icons.train_outlined, size: 13, color: AppColors.onSurfaceVariant),
+                    const SizedBox(width: 3),
+                    Text('${widget.vehicles.length} train${widget.vehicles.length == 1 ? '' : 's'}',
                         style: GoogleFonts.inter(
-                          fontSize: 11,
-                          color: AppColors.onSurfaceVariant,
-                        ),
+                            fontSize: 11, color: AppColors.onSurfaceVariant)),
+                    const Spacer(),
+                    _MovingBadge(count: moving, total: widget.vehicles.length),
+                  ]),
+                  const SizedBox(height: 10),
+
+                  // Vehicle rows
+                  ...shown.map((v) => Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: _VehicleRow(vehicle: v, routeInfo: info),
+                      )),
+
+                  // Expand / collapse
+                  if (widget.vehicles.length > 5)
+                    GestureDetector(
+                      onTap: () => setState(() => _expanded = !_expanded),
+                      child: Text(
+                        _expanded
+                            ? 'Show fewer'
+                            : '+${widget.vehicles.length - 5} more trains',
+                        style: GoogleFonts.inter(
+                            fontSize: 11, color: AppColors.primary,
+                            fontWeight: FontWeight.w600),
                       ),
-                  ],
-                ),
+                    ),
+                ]),
               ),
             ),
           ],
@@ -480,6 +546,8 @@ class _RouteCard extends StatelessWidget {
     );
   }
 }
+
+// ── Moving badge ──────────────────────────────────────────────────────────────
 
 class _MovingBadge extends StatelessWidget {
   final int count;
@@ -490,36 +558,51 @@ class _MovingBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final allStopped = count == 0;
     final color = allStopped ? AppColors.outline : const Color(0xFF34A853);
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 7,
-          height: 7,
-          decoration: BoxDecoration(shape: BoxShape.circle, color: color),
-        ),
-        const SizedBox(width: 4),
-        Text(
-          allStopped ? 'All stopped' : '$count moving',
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Container(width: 7, height: 7,
+          decoration: BoxDecoration(shape: BoxShape.circle, color: color)),
+      const SizedBox(width: 4),
+      Text(allStopped ? 'All stopped' : '$count moving',
           style: GoogleFonts.inter(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: color,
-          ),
-        ),
-      ],
-    );
+              fontSize: 11, fontWeight: FontWeight.w600, color: color)),
+    ]);
   }
 }
 
+// ── Vehicle row ───────────────────────────────────────────────────────────────
+
 class _VehicleRow extends StatelessWidget {
   final VehiclePositionData vehicle;
-  const _VehicleRow({required this.vehicle});
+  final _RouteInfo routeInfo;
+  const _VehicleRow({required this.vehicle, required this.routeInfo});
+
+  /// Resolve destination from directionId, falling back to trip_id inference.
+  String _destination() {
+    int? dir = vehicle.directionId ?? _inferDirectionFromTripId(vehicle.tripId);
+    if (dir != null && routeInfo.termini.length > dir) {
+      return routeInfo.termini[dir];
+    }
+    // No direction info — show both termini as range
+    if (routeInfo.termini.length >= 2) {
+      return '${routeInfo.termini[0]} ↔ ${routeInfo.termini[1]}';
+    }
+    return 'Unknown destination';
+  }
+
+  /// Nearest station name within 1 km, or null.
+  String? _nearestStation() {
+    final lat = vehicle.latitude;
+    final lng = vehicle.longitude;
+    if (lat == null || lng == null) return null;
+    return TransitService.findNearestStationName(lat, lng);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final kmh = vehicle.speedKmh;
-    final speedText = kmh != null ? '${kmh.round()} km/h' : '—';
+    final kmh         = vehicle.speedKmh;
+    final speedText   = kmh != null ? '${kmh.round()} km/h' : '—';
+    final destination = _destination();
+    final nearest     = _nearestStation();
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -528,209 +611,172 @@ class _VehicleRow extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: AppColors.surfaceVariant),
       ),
-      child: Row(
-        children: [
-          // Train icon
-          Container(
-            width: 28,
-            height: 28,
-            decoration: BoxDecoration(
-              color: vehicle.isStopped
-                  ? AppColors.surfaceVariant
-                  : AppColors.primaryContainer,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              vehicle.isStopped
-                  ? Icons.stop_circle_outlined
-                  : Icons.directions_railway_outlined,
-              size: 15,
-              color: vehicle.isStopped
-                  ? AppColors.onSurfaceVariant
-                  : AppColors.primary,
-            ),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // Train icon
+        Container(
+          width: 32, height: 32,
+          decoration: BoxDecoration(
+            color: vehicle.isStopped
+                ? AppColors.surfaceVariant
+                : routeInfo.color.withOpacity(0.15),
+            shape: BoxShape.circle,
           ),
-          const SizedBox(width: 10),
+          child: Icon(
+            vehicle.isStopped
+                ? Icons.stop_circle_outlined
+                : Icons.directions_railway,
+            size: 16,
+            color: vehicle.isStopped ? AppColors.onSurfaceVariant : routeInfo.color,
+          ),
+        ),
+        const SizedBox(width: 10),
 
-          // Label + status
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  vehicle.vehicleLabel.isNotEmpty
-                      ? vehicle.vehicleLabel
-                      : 'Train ${vehicle.entityId}',
-                  style: GoogleFonts.inter(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.onSurface,
-                  ),
+        // Label + destination + nearest station
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            // Train label
+            Text(
+              vehicle.vehicleLabel.isNotEmpty
+                  ? vehicle.vehicleLabel
+                  : 'Train ${vehicle.entityId}',
+              style: GoogleFonts.inter(
+                  fontSize: 13, fontWeight: FontWeight.w600,
+                  color: AppColors.onSurface),
+            ),
+            const SizedBox(height: 2),
+
+            // Destination
+            Row(children: [
+              Icon(Icons.arrow_forward, size: 11, color: routeInfo.color),
+              const SizedBox(width: 3),
+              Expanded(
+                child: Text(destination,
+                    style: GoogleFonts.inter(
+                        fontSize: 12, fontWeight: FontWeight.w500,
+                        color: routeInfo.color),
+                    overflow: TextOverflow.ellipsis),
+              ),
+            ]),
+
+            // Nearest station (live location)
+            if (nearest != null) ...[
+              const SizedBox(height: 2),
+              Row(children: [
+                Icon(Icons.location_on_outlined, size: 11,
+                    color: AppColors.onSurfaceVariant),
+                const SizedBox(width: 3),
+                Expanded(
+                  child: Text('Near $nearest',
+                      style: GoogleFonts.inter(
+                          fontSize: 11, color: AppColors.onSurfaceVariant),
+                      overflow: TextOverflow.ellipsis),
                 ),
-                const SizedBox(height: 1),
-                Text(
-                  vehicle.statusLabel,
-                  style: GoogleFonts.inter(
+              ]),
+            ],
+
+            // Status
+            const SizedBox(height: 2),
+            Text(vehicle.statusLabel,
+                style: GoogleFonts.inter(
                     fontSize: 11,
                     color: vehicle.isStopped
                         ? AppColors.onSurfaceVariant
-                        : const Color(0xFF34A853),
-                  ),
-                ),
-              ],
-            ),
-          ),
+                        : const Color(0xFF34A853))),
+          ]),
+        ),
 
-          // Speed
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                speedText,
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: vehicle.isStopped
-                      ? AppColors.outline
-                      : AppColors.primary,
-                ),
-              ),
-              Text(
-                vehicle.tripId.isNotEmpty
-                    ? 'Trip ${vehicle.tripId.length > 8 ? vehicle.tripId.substring(0, 8) : vehicle.tripId}'
-                    : '',
-                style: GoogleFonts.inter(
-                  fontSize: 10,
-                  color: AppColors.outline,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
+        // Speed
+        Column(crossAxisAlignment: CrossAxisAlignment.end, mainAxisAlignment: MainAxisAlignment.start, children: [
+          Text(speedText,
+              style: GoogleFonts.inter(
+                  fontSize: 14, fontWeight: FontWeight.w700,
+                  color: vehicle.isStopped ? AppColors.outline : AppColors.primary)),
+          if (vehicle.latitude != null && vehicle.longitude != null)
+            Text(
+              '${vehicle.latitude!.toStringAsFixed(3)}, '
+              '${vehicle.longitude!.toStringAsFixed(3)}',
+              style: GoogleFonts.inter(fontSize: 9, color: AppColors.outline),
+            ),
+        ]),
+      ]),
     );
   }
 }
 
-// ── Loading view ──────────────────────────────────────────────────────────────
+// ── Loading / Error / Empty ───────────────────────────────────────────────────
 
 class _LoadingView extends StatelessWidget {
   const _LoadingView();
-
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const CircularProgressIndicator(color: AppColors.primary),
-          const SizedBox(height: 16),
-          Text(
-            'Fetching live train data…',
-            style: GoogleFonts.inter(
-              fontSize: 14,
-              color: AppColors.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'KTMB via data.gov.my',
-            style: GoogleFonts.inter(
-              fontSize: 12,
-              color: AppColors.outline,
-            ),
-          ),
-        ],
-      ),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        const CircularProgressIndicator(color: AppColors.primary),
+        const SizedBox(height: 16),
+        Text('Fetching live train data…',
+            style: GoogleFonts.inter(fontSize: 14, color: AppColors.onSurfaceVariant)),
+        const SizedBox(height: 6),
+        Text('KTMB + Rapid KL via data.gov.my',
+            style: GoogleFonts.inter(fontSize: 12, color: AppColors.outline)),
+      ]),
     );
   }
 }
-
-// ── Error view ────────────────────────────────────────────────────────────────
 
 class _ErrorView extends StatelessWidget {
   final String error;
   final VoidCallback onRetry;
   const _ErrorView({required this.error, required this.onRetry});
-
   @override
   Widget build(BuildContext context) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.signal_wifi_off_outlined,
-                size: 48, color: AppColors.outline),
-            const SizedBox(height: 16),
-            Text(
-              'Could not load train data',
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.signal_wifi_off_outlined,
+              size: 48, color: AppColors.outline),
+          const SizedBox(height: 16),
+          Text('Could not load train data',
               style: GoogleFonts.inter(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: AppColors.onSurface,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              error,
-              style: GoogleFonts.inter(
-                fontSize: 12,
-                color: AppColors.onSurfaceVariant,
-              ),
-              textAlign: TextAlign.center,
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh, size: 16),
-              label: const Text('Retry'),
-              style: ElevatedButton.styleFrom(
+                  fontSize: 16, fontWeight: FontWeight.w600,
+                  color: AppColors.onSurface)),
+          const SizedBox(height: 8),
+          Text(error,
+              style: GoogleFonts.inter(fontSize: 12, color: AppColors.onSurfaceVariant),
+              textAlign: TextAlign.center, maxLines: 3,
+              overflow: TextOverflow.ellipsis),
+          const SizedBox(height: 20),
+          ElevatedButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh, size: 16),
+            label: const Text('Retry'),
+            style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primary,
-                foregroundColor: AppColors.onPrimary,
-              ),
-            ),
-          ],
-        ),
+                foregroundColor: AppColors.onPrimary),
+          ),
+        ]),
       ),
     );
   }
 }
 
-// ── Empty state ───────────────────────────────────────────────────────────────
-
 class _EmptyState extends StatelessWidget {
-  const _EmptyState();
-
+  final String message;
+  const _EmptyState({required this.message});
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 40),
+      padding: const EdgeInsets.symmetric(vertical: 32),
       alignment: Alignment.center,
-      child: Column(
-        children: [
-          const Icon(Icons.train_outlined, size: 40, color: AppColors.outline),
-          const SizedBox(height: 12),
-          Text(
-            'No active trains at the moment',
-            style: GoogleFonts.inter(
-              fontSize: 14,
-              color: AppColors.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Data updates every 30 seconds',
-            style: GoogleFonts.inter(
-              fontSize: 12,
-              color: AppColors.outline,
-            ),
-          ),
-        ],
-      ),
+      child: Column(children: [
+        const Icon(Icons.train_outlined, size: 36, color: AppColors.outline),
+        const SizedBox(height: 10),
+        Text(message,
+            style: GoogleFonts.inter(fontSize: 13, color: AppColors.onSurfaceVariant)),
+        const SizedBox(height: 4),
+        Text('Data updates every 30 seconds',
+            style: GoogleFonts.inter(fontSize: 11, color: AppColors.outline)),
+      ]),
     );
   }
 }

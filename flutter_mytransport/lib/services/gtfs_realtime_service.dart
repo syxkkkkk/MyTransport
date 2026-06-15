@@ -10,6 +10,7 @@ class VehiclePositionData {
   final String vehicleLabel;
   final String tripId;
   final String routeId;
+  final int? directionId;   // 0 or 1 from GTFS-RT TripDescriptor
   final double? latitude;
   final double? longitude;
   final double? bearing;
@@ -23,6 +24,7 @@ class VehiclePositionData {
     required this.vehicleLabel,
     required this.tripId,
     required this.routeId,
+    this.directionId,
     this.latitude,
     this.longitude,
     this.bearing,
@@ -54,23 +56,56 @@ class GtfsFeed {
   const GtfsFeed({required this.feedTimestamp, required this.vehicles});
 }
 
+/// Combined feed from multiple operators.
+class AllFeedsResult {
+  final GtfsFeed ktmb;
+  final GtfsFeed? rapidKL;  // null if fetch failed
+  final String? rapidKLError;
+
+  const AllFeedsResult({
+    required this.ktmb,
+    this.rapidKL,
+    this.rapidKLError,
+  });
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 class GtfsRealtimeService {
-  static const _ktmbUrl =
-      'https://api.data.gov.my/gtfs-realtime/vehicle-position/ktmb';
+  static const _ktmbUrl    = 'https://api.data.gov.my/gtfs-realtime/vehicle-position/ktmb';
+  static const _rapidKLUrl = 'https://api.data.gov.my/gtfs-realtime/vehicle-position/rapid-kl';
 
   /// Fetch and parse live KTMB vehicle positions.
   static Future<GtfsFeed> fetchKtmbVehicles() async {
     final response = await http
         .get(Uri.parse(_ktmbUrl))
         .timeout(const Duration(seconds: 20));
-
     if (response.statusCode != 200) {
       throw Exception('GTFS API returned HTTP ${response.statusCode}');
     }
-
     return _parseFeedMessage(response.bodyBytes);
+  }
+
+  /// Fetch and parse live Rapid KL (LRT/MRT/Monorail) vehicle positions.
+  static Future<GtfsFeed> fetchRapidKLVehicles() async {
+    final response = await http
+        .get(Uri.parse(_rapidKLUrl))
+        .timeout(const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw Exception('Rapid KL GTFS API returned HTTP ${response.statusCode}');
+    }
+    return _parseFeedMessage(response.bodyBytes);
+  }
+
+  /// Fetch KTMB + Rapid KL in parallel. Rapid KL error is soft-failed.
+  static Future<AllFeedsResult> fetchAllOperators() async {
+    final results = await Future.wait([
+      fetchKtmbVehicles(),
+      fetchRapidKLVehicles().then<GtfsFeed?>((f) => f).catchError((_) => null),
+    ]);
+    final ktmb     = results[0] as GtfsFeed;
+    final rapidKL  = results[1] as GtfsFeed?;
+    return AllFeedsResult(ktmb: ktmb, rapidKL: rapidKL);
   }
 
   // ── Top-level FeedMessage parser ──────────────────────────────────────────
@@ -142,6 +177,7 @@ class GtfsRealtimeService {
       Uint8List bytes, String entityId) {
     final reader = _ProtoReader(bytes);
     String tripId = '', routeId = '', vehicleId = '', vehicleLabel = '';
+    int? directionId;
     double? lat, lng, bearing, speed;
     int? timestamp;
     int status = 2;
@@ -153,6 +189,7 @@ class GtfsRealtimeService {
           final t = _parseTripDescriptor(reader.readBytes());
           tripId = t.$1;
           routeId = t.$2;
+          directionId = t.$3;
         case 2 when wireType == 2: // VehicleDescriptor
           final v = _parseVehicleDescriptor(reader.readBytes());
           vehicleId = v.$1;
@@ -178,6 +215,7 @@ class GtfsRealtimeService {
       vehicleLabel: vehicleLabel.isNotEmpty ? vehicleLabel : vehicleId,
       tripId: tripId,
       routeId: routeId,
+      directionId: directionId,
       latitude: lat,
       longitude: lng,
       bearing: bearing,
@@ -187,22 +225,25 @@ class GtfsRealtimeService {
     );
   }
 
-  // ── TripDescriptor → (trip_id, route_id) ─────────────────────────────────
+  // ── TripDescriptor → (trip_id, route_id, direction_id) ──────────────────
 
-  static (String, String) _parseTripDescriptor(Uint8List bytes) {
+  static (String, String, int?) _parseTripDescriptor(Uint8List bytes) {
     final reader = _ProtoReader(bytes);
     String tripId = '', routeId = '';
+    int? directionId;
     while (reader.hasMore) {
       final (:fieldNumber, :wireType) = reader.readTag();
       if (fieldNumber == 1 && wireType == 2) {
         tripId = reader.readString();
       } else if (fieldNumber == 5 && wireType == 2) {
         routeId = reader.readString();
+      } else if (fieldNumber == 6 && wireType == 0) {
+        directionId = reader.readVarint(); // 0 or 1
       } else {
         reader.skip(wireType);
       }
     }
-    return (tripId, routeId);
+    return (tripId, routeId, directionId);
   }
 
   // ── VehicleDescriptor → (id, label) ──────────────────────────────────────

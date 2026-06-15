@@ -272,6 +272,22 @@ class TransitService {
     if (code.startsWith('KTM')) return (0.60 + stops * 0.25).clamp(0.60, 9.50);
     return (0.70 + stops * 0.12).clamp(0.70, 4.00);
   }
+
+  /// Returns the name of the nearest station within [maxKm] km of [lat]/[lng],
+  /// or null if nothing is close enough.
+  static String? findNearestStationName(double lat, double lng,
+      {double maxKm = 1.0}) {
+    String? best;
+    double bestDist = maxKm;
+    for (final s in _kStations) {
+      final d = _haversineKm(lat, lng, s['lat'] as double, s['lng'] as double);
+      if (d < bestDist) {
+        bestDist = d;
+        best = s['name'] as String;
+      }
+    }
+    return best;
+  }
 }
 
 // ── Route models ──────────────────────────────────────────────────────────────
