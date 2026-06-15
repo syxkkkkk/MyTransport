@@ -56,24 +56,23 @@ class GtfsFeed {
   const GtfsFeed({required this.feedTimestamp, required this.vehicles});
 }
 
-/// Combined feed from multiple operators.
+/// Combined feed result.
+/// Note: Rapid KL (LRT/MRT/Monorail) does NOT have a stable GTFS-RT feed
+/// yet per data.gov.my docs — only KTMB is available for rail.
 class AllFeedsResult {
   final GtfsFeed ktmb;
-  final GtfsFeed? rapidKL;  // null if fetch failed
-  final String? rapidKLError;
 
-  const AllFeedsResult({
-    required this.ktmb,
-    this.rapidKL,
-    this.rapidKLError,
-  });
+  const AllFeedsResult({required this.ktmb});
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
 class GtfsRealtimeService {
-  static const _ktmbUrl    = 'https://api.data.gov.my/gtfs-realtime/vehicle-position/ktmb';
-  static const _rapidKLUrl = 'https://api.data.gov.my/gtfs-realtime/vehicle-position/rapid-kl';
+  static const _ktmbUrl = 'https://api.data.gov.my/gtfs-realtime/vehicle-position/ktmb';
+
+  // NOTE: Rapid KL (LRT/MRT/Monorail) GTFS-RT is NOT available yet.
+  // Per data.gov.my docs: "rapid-rail-kl does not yet have stable realtime feeds."
+  // Only bus feeds exist for Prasarana (rapid-bus-kl, rapid-bus-mrtfeeder, etc.)
 
   /// Fetch and parse live KTMB vehicle positions.
   static Future<GtfsFeed> fetchKtmbVehicles() async {
@@ -86,26 +85,10 @@ class GtfsRealtimeService {
     return _parseFeedMessage(response.bodyBytes);
   }
 
-  /// Fetch and parse live Rapid KL (LRT/MRT/Monorail) vehicle positions.
-  static Future<GtfsFeed> fetchRapidKLVehicles() async {
-    final response = await http
-        .get(Uri.parse(_rapidKLUrl))
-        .timeout(const Duration(seconds: 20));
-    if (response.statusCode != 200) {
-      throw Exception('Rapid KL GTFS API returned HTTP ${response.statusCode}');
-    }
-    return _parseFeedMessage(response.bodyBytes);
-  }
-
-  /// Fetch KTMB + Rapid KL in parallel. Rapid KL error is soft-failed.
+  /// Fetch all available rail feeds (currently only KTMB).
   static Future<AllFeedsResult> fetchAllOperators() async {
-    final results = await Future.wait([
-      fetchKtmbVehicles(),
-      fetchRapidKLVehicles().then<GtfsFeed?>((f) => f).catchError((_) => null),
-    ]);
-    final ktmb     = results[0] as GtfsFeed;
-    final rapidKL  = results[1] as GtfsFeed?;
-    return AllFeedsResult(ktmb: ktmb, rapidKL: rapidKL);
+    final ktmb = await fetchKtmbVehicles();
+    return AllFeedsResult(ktmb: ktmb);
   }
 
   // ── Top-level FeedMessage parser ──────────────────────────────────────────
