@@ -47,9 +47,9 @@ class BottomNavBar extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
               _NavItem(icon: Icons.home_outlined, label: 'Home', isActive: currentTab == NavTab.home, onTap: () => _navigate(context, NavTab.home)),
-              _NavItem(icon: Icons.map_outlined, label: 'Map', isActive: currentTab == NavTab.map, onTap: () => _navigate(context, NavTab.map)),
-              _NavItem(icon: Icons.campaign_outlined, label: 'Announce', isActive: currentTab == NavTab.announcement, onTap: () => _navigate(context, NavTab.announcement)),
-              _NavItem(icon: Icons.qr_code_scanner_outlined, label: 'AR Nav', isActive: currentTab == NavTab.arNav, onTap: () => _navigate(context, NavTab.arNav)),
+              _NavItem(icon: Icons.route_outlined, label: 'Plan', isActive: currentTab == NavTab.map, onTap: () => _navigate(context, NavTab.map)),
+              _NavItem(icon: Icons.directions_transit_outlined, label: 'Transit', isActive: currentTab == NavTab.announcement, onTap: () => _navigate(context, NavTab.announcement)),
+              _NavItem(icon: Icons.qr_code_scanner_outlined, label: 'Navigate', isActive: currentTab == NavTab.arNav, onTap: () => _navigate(context, NavTab.arNav)),
               _NavItem(icon: Icons.history_outlined, label: 'History', isActive: currentTab == NavTab.history, onTap: () => _navigate(context, NavTab.history)),
               _NavItem(icon: Icons.person_outline, label: 'Profile', isActive: currentTab == NavTab.profile, onTap: () => _navigate(context, NavTab.profile)),
             ],

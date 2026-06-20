@@ -173,7 +173,7 @@ class _LiveTrainNotificationsScreenState extends State<LiveTrainNotificationsScr
           icon: const Icon(Icons.arrow_back, color: AppColors.primary),
           onPressed: () => Navigator.pop(context),
         ),
-        title: const Text('Train & Transit',
+        title: const Text('Transit Lines',
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: AppColors.primary)),
         centerTitle: true,
         actions: [

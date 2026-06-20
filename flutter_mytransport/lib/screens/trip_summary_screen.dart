@@ -27,7 +27,7 @@ class _TripSummaryScreenState extends State<TripSummaryScreen> {
               context, '/home', (r) => false),
         ),
         title: const Text(
-          'MyTransport Malaysia',
+          'Trip Summary',
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w700,

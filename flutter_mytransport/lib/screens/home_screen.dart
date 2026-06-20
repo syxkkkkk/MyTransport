@@ -754,7 +754,7 @@ class _ShortcutsGrid extends StatelessWidget {
     final items = [
       _ShortcutItem(
         icon: Icons.train_outlined,
-        label: 'Nearby\nStations',
+        label: 'Nearby\nBus Stops',
         bgColor: AppColors.primaryContainer,
         iconColor: AppColors.primary,
         onTap: onNearbyStationsTap,
@@ -768,7 +768,7 @@ class _ShortcutsGrid extends StatelessWidget {
       ),
       _ShortcutItem(
         icon: Icons.route_outlined,
-        label: 'Train\nRoutes',
+        label: 'Transit\nMap',
         bgColor: AppColors.tertiaryFixed,
         iconColor: AppColors.tertiary,
         onTap: () => Navigator.pushNamed(context, '/transit-map'),
