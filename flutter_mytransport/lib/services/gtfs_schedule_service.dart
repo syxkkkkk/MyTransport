@@ -3,14 +3,14 @@ import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'gtfs_bus_stop_service.dart';
 
-// ── Public model ──────────────────────────────────────────────────────────────
+// ── Public models ─────────────────────────────────────────────────────────────
 
 class GtfsArrival {
-  final String routeId;     // e.g. "T810"
+  final String routeId;     // short name, e.g. "T810"
   final String direction;   // trip_headsign
-  final int? eta1Min;       // minutes to first arrival
-  final int? eta2Min;       // minutes to second arrival
-  final bool isLive;        // always false (schedule-based)
+  final int? eta1Min;
+  final int? eta2Min;
+  final bool isLive;
 
   const GtfsArrival({
     required this.routeId,
@@ -21,11 +21,45 @@ class GtfsArrival {
   });
 }
 
+class RouteStopItem {
+  final String stopId;
+  final String stopName;
+  const RouteStopItem({required this.stopId, required this.stopName});
+}
+
+class RouteDetail {
+  final String routeShortName;
+  final String headsign;
+  final int directionId;
+  final bool hasOtherDirection;
+  final List<RouteStopItem> stops;
+  final int currentStopIndex;       // index of the selected stop in [stops]
+  final List<String> allScheduledTimes; // "08:10 am" strings
+  final String? nextDepartureStr;
+
+  const RouteDetail({
+    required this.routeShortName,
+    required this.headsign,
+    required this.directionId,
+    required this.hasOtherDirection,
+    required this.stops,
+    required this.currentStopIndex,
+    required this.allScheduledTimes,
+    this.nextDepartureStr,
+  });
+}
+
 // ── Internal index types ──────────────────────────────────────────────────────
+
+class _TripStop {
+  final String stopId;
+  final int seq;
+  const _TripStop(this.stopId, this.seq);
+}
 
 class _StopTime {
   final String tripId;
-  final int arrivalSecs; // seconds past midnight (template time)
+  final int arrivalSecs;
   const _StopTime(this.tripId, this.arrivalSecs);
 }
 
@@ -33,35 +67,39 @@ class _Trip {
   final String routeId;
   final String serviceId;
   final String headsign;
-  const _Trip(this.routeId, this.serviceId, this.headsign);
+  final int directionId; // 0 or 1
+  const _Trip(this.routeId, this.serviceId, this.headsign, this.directionId);
 }
 
 class _Calendar {
-  final String startDate; // YYYYMMDD
+  final String startDate;
   final String endDate;
-  final List<bool> days;  // index 0=Mon … 6=Sun
+  final List<bool> days; // 0=Mon … 6=Sun
   const _Calendar(this.startDate, this.endDate, this.days);
 }
 
-/// One frequency band for a trip (from frequencies.txt).
 class _Frequency {
-  final int startSecs;   // service start time (secs past midnight)
-  final int endSecs;     // service end time
-  final int headwaySecs; // interval between departures
+  final int startSecs;
+  final int endSecs;
+  final int headwaySecs;
   const _Frequency(this.startSecs, this.endSecs, this.headwaySecs);
 }
 
 class _GtfsScheduleIndex {
-  final Map<String, List<_StopTime>> byStop;         // stop_id → template times
-  final Map<String, _Trip> trips;                    // trip_id → Trip
-  final Map<String, String> routeNames;              // route_id → short_name
-  final Map<String, _Calendar> calendar;             // service_id → Calendar
-  final Map<String, Map<String, int>> caldates;      // service_id → date → type
-  final Map<String, List<_Frequency>> freqs;         // trip_id → frequencies
-  final Map<String, int> tripBaseTimes;              // trip_id → first stop secs
+  final Map<String, List<_StopTime>> byStop;       // stop_id → template times
+  final Map<String, List<_TripStop>> tripStops;    // trip_id → ordered stops
+  final Map<String, String> stopNames;             // stop_id → stop_name
+  final Map<String, _Trip> trips;                  // trip_id → Trip
+  final Map<String, String> routeNames;            // route_id → short_name
+  final Map<String, _Calendar> calendar;
+  final Map<String, Map<String, int>> caldates;
+  final Map<String, List<_Frequency>> freqs;
+  final Map<String, int> tripBaseTimes;
 
   const _GtfsScheduleIndex({
     required this.byStop,
+    required this.tripStops,
+    required this.stopNames,
     required this.trips,
     required this.routeNames,
     required this.calendar,
@@ -78,10 +116,7 @@ class GtfsScheduleService {
   static String? _cacheDate;
   static Completer<_GtfsScheduleIndex>? _inFlight;
 
-  /// Pre-warms the schedule index. Call in background after stops are loaded.
-  static void preload() {
-    _load().ignore();
-  }
+  static void preload() => _load().ignore();
 
   static Future<_GtfsScheduleIndex> _load() async {
     final today = GtfsBusStopService.today();
@@ -98,14 +133,10 @@ class GtfsScheduleService {
       debugPrint('[GtfsSchedule] Parsing schedule in isolate…');
       final index = await compute(_parseScheduleInIsolate, bytes);
 
-      if (index.calendar.isNotEmpty) {
-        final s = index.calendar.entries.first;
-        debugPrint('[GtfsSchedule] Sample calendar: '
-            '${s.key} → ${s.value.startDate}–${s.value.endDate}');
-      }
       debugPrint('[GtfsSchedule] Index ready: '
           '${index.byStop.length} stops, ${index.trips.length} trips, '
-          '${index.freqs.length} frequency trips');
+          '${index.tripStops.length} tripStops, '
+          '${index.freqs.length} freq trips');
 
       _cache = index;
       _cacheDate = today;
@@ -120,42 +151,28 @@ class GtfsScheduleService {
     }
   }
 
-  /// Returns upcoming arrivals for [stopId] within [windowMinutes].
+  // ── Arrivals ──────────────────────────────────────────────────────────────
+
   static Future<List<GtfsArrival>> getArrivals(
     String stopId, {
     int windowMinutes = 90,
   }) async {
     final index = await _load();
-
     final now = DateTime.now();
     final nowSecs = now.hour * 3600 + now.minute * 60 + now.second;
     final limitSecs = nowSecs + windowMinutes * 60;
     final dateStr = _dateStr(now);
-    final dayIdx = now.weekday - 1; // Mon=0 … Sun=6
+    final dayIdx = now.weekday - 1;
 
     final times = index.byStop[stopId];
-    debugPrint('[GtfsSchedule] getArrivals($stopId): '
-        '${times?.length ?? 0} template entries, '
-        'date=$dateStr dayIdx=$dayIdx '
-        'now=${nowSecs}s limit=${limitSecs}s');
+    if (times == null || times.isEmpty) return [];
 
-    if (times == null || times.isEmpty) {
-      debugPrint('[GtfsSchedule] No stop_times entries for $stopId');
-      return [];
-    }
-
-    // Pass 1: strict (date range + day-of-week + calendar_dates)
     var result = _collectArrivals(times, nowSecs, limitSecs, index,
         dateStr, dayIdx, strict: true);
-    debugPrint('[GtfsSchedule] Pass1 strict: ${result.length} routes');
-
-    // Pass 2: day-of-week only (handles stale GTFS date ranges)
     if (result.isEmpty) {
       result = _collectArrivals(times, nowSecs, limitSecs, index,
           dateStr, dayIdx, strict: false);
-      debugPrint('[GtfsSchedule] Pass2 dayOfWeek: ${result.length} routes');
     }
-
     return result;
   }
 
@@ -170,52 +187,41 @@ class GtfsScheduleService {
   }) {
     final Map<String, List<int>> routeTimes = {};
     final Map<String, String> routeHead = {};
-    int cntFreq = 0, cntSched = 0, cntSkip = 0;
 
     for (final st in times) {
       final trip = index.trips[st.tripId];
-      if (trip == null) { cntSkip++; continue; }
+      if (trip == null) continue;
 
-      // Service day check
       final runs = strict
           ? _serviceRunsStrict(trip.serviceId, dateStr, dayIdx,
               index.calendar, index.caldates)
           : _serviceRunsDayOnly(trip.serviceId, dayIdx, index.calendar);
-      if (!runs) { cntSkip++; continue; }
+      if (!runs) continue;
 
       final freqList = index.freqs[st.tripId];
 
       if (freqList != null && freqList.isNotEmpty) {
-        // ── Frequency-based: expand template time across service bands ──────
-        // offset = how far into the trip this stop is
         final base = index.tripBaseTimes[st.tripId] ?? st.arrivalSecs;
         final offsetSecs = st.arrivalSecs - base;
-
         for (final freq in freqList) {
-          // Walk through each trip departure in this frequency band
           int tripDep = freq.startSecs;
           while (tripDep + offsetSecs <= freq.endSecs) {
             final actualSecs = tripDep + offsetSecs;
             if (actualSecs >= nowSecs && actualSecs <= limitSecs) {
               routeTimes.putIfAbsent(trip.routeId, () => []).add(actualSecs);
               routeHead[trip.routeId] ??= trip.headsign;
-              cntFreq++;
             }
             tripDep += freq.headwaySecs;
-            if (freq.headwaySecs <= 0) break; // safety
+            if (freq.headwaySecs <= 0) break;
           }
         }
       } else {
-        // ── Schedule-based: use template time directly ─────────────────────
         if (st.arrivalSecs >= nowSecs && st.arrivalSecs <= limitSecs) {
           routeTimes.putIfAbsent(trip.routeId, () => []).add(st.arrivalSecs);
           routeHead[trip.routeId] ??= trip.headsign;
-          cntSched++;
         }
       }
     }
-
-    debugPrint('[GtfsSchedule] freq_hits=$cntFreq sched_hits=$cntSched skipped=$cntSkip routes=${routeTimes.length}');
 
     if (routeTimes.isEmpty) return [];
 
@@ -224,12 +230,10 @@ class GtfsScheduleService {
       final sorted = entry.value..sort();
       final routeId = entry.key;
       final shortName = index.routeNames[routeId] ?? routeId;
-
       final eta1 = ((sorted[0] - nowSecs) / 60).round().clamp(0, 999);
       final eta2 = sorted.length > 1
           ? ((sorted[1] - nowSecs) / 60).round().clamp(0, 999)
           : null;
-
       result.add(GtfsArrival(
         routeId: shortName,
         direction: routeHead[routeId] ?? '',
@@ -238,10 +242,142 @@ class GtfsScheduleService {
         isLive: false,
       ));
     }
-
     result.sort((a, b) => (a.eta1Min ?? 999).compareTo(b.eta1Min ?? 999));
     return result;
   }
+
+  // ── Route detail ──────────────────────────────────────────────────────────
+
+  /// Returns full route info for showing the stop list timeline.
+  /// [routeShortName] matches [GtfsArrival.routeId].
+  static Future<RouteDetail?> getRouteDetail(
+    String stopId,
+    String routeShortName, {
+    int directionId = 0,
+  }) async {
+    final index = await _load();
+    final now = DateTime.now();
+    final nowSecs = now.hour * 3600 + now.minute * 60 + now.second;
+    final dayIdx = now.weekday - 1;
+
+    final stopTimes = index.byStop[stopId];
+    if (stopTimes == null || stopTimes.isEmpty) return null;
+
+    // Collect all times at this stop for the route+direction,
+    // and find a representative trip (most stops).
+    final allTimeSecs = <int>{};
+    String? headsign;
+    String? routeId;
+    String? repTripId;
+    int repTripLen = 0;
+
+    for (final st in stopTimes) {
+      final trip = index.trips[st.tripId];
+      if (trip == null) continue;
+      final sn = index.routeNames[trip.routeId] ?? trip.routeId;
+      if (sn != routeShortName) continue;
+      if (trip.directionId != directionId) continue;
+
+      routeId = trip.routeId;
+      headsign ??= trip.headsign;
+
+      // Use day-of-week only to handle stale GTFS dates
+      if (_serviceRunsDayOnly(trip.serviceId, dayIdx, index.calendar)) {
+        final freqList = index.freqs[st.tripId];
+        if (freqList != null && freqList.isNotEmpty) {
+          final base = index.tripBaseTimes[st.tripId] ?? st.arrivalSecs;
+          final offset = st.arrivalSecs - base;
+          for (final freq in freqList) {
+            int dep = freq.startSecs;
+            while (dep + offset <= freq.endSecs) {
+              allTimeSecs.add(dep + offset);
+              dep += freq.headwaySecs;
+              if (freq.headwaySecs <= 0) break;
+            }
+          }
+        } else {
+          allTimeSecs.add(st.arrivalSecs);
+        }
+      }
+
+      // Pick the trip that serves the most stops
+      final len = index.tripStops[st.tripId]?.length ?? 0;
+      if (len > repTripLen) {
+        repTripLen = len;
+        repTripId = st.tripId;
+      }
+    }
+
+    // If no results for this direction, try the other direction
+    if (routeId == null) {
+      final otherDir = 1 - directionId;
+      for (final st in stopTimes) {
+        final trip = index.trips[st.tripId];
+        if (trip == null) continue;
+        final sn = index.routeNames[trip.routeId] ?? trip.routeId;
+        if (sn != routeShortName) continue;
+        if (trip.directionId != otherDir) continue;
+        routeId = trip.routeId;
+        headsign ??= trip.headsign;
+        final len = index.tripStops[st.tripId]?.length ?? 0;
+        if (len > repTripLen) {
+          repTripLen = len;
+          repTripId = st.tripId;
+        }
+      }
+      if (routeId != null) directionId = otherDir;
+    }
+
+    if (routeId == null || repTripId == null) return null;
+
+    // Build ordered stop list for the representative trip
+    final rawStops = List<_TripStop>.from(index.tripStops[repTripId] ?? []);
+    rawStops.sort((a, b) => a.seq.compareTo(b.seq));
+    final stops = rawStops
+        .map((s) => RouteStopItem(
+              stopId: s.stopId,
+              stopName: index.stopNames[s.stopId] ?? s.stopId,
+            ))
+        .toList();
+
+    final currentStopIndex = stops.indexWhere((s) => s.stopId == stopId);
+
+    // Sort + deduplicate times
+    final sortedTimes = allTimeSecs.toList()..sort();
+
+    // Format "HH:MM am/pm"
+    String secsToStr(int secs) {
+      final h = (secs ~/ 3600) % 24;
+      final m = (secs % 3600) ~/ 60;
+      final period = h < 12 ? 'am' : 'pm';
+      final h12 = h == 0 ? 12 : (h > 12 ? h - 12 : h);
+      return '${h12.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')} $period';
+    }
+
+    final scheduledTimes = sortedTimes.map(secsToStr).toList();
+
+    int? nextSecs;
+    for (final t in sortedTimes) {
+      if (t >= nowSecs) { nextSecs = t; break; }
+    }
+
+    // Check if other direction exists
+    final hasOther = index.trips.values
+        .any((t) => t.routeId == routeId && t.directionId == (1 - directionId));
+
+    return RouteDetail(
+      routeShortName: routeShortName,
+      headsign: headsign ?? routeShortName,
+      directionId: directionId,
+      hasOtherDirection: hasOther,
+      stops: stops,
+      currentStopIndex: currentStopIndex,
+      allScheduledTimes: scheduledTimes,
+      nextDepartureStr: nextSecs != null ? secsToStr(nextSecs) : null,
+    );
+  }
+
+  // ── Calendar helpers ──────────────────────────────────────────────────────
 
   static bool _serviceRunsStrict(
     String serviceId,
@@ -279,16 +415,20 @@ class GtfsScheduleService {
   }
 }
 
-// ── Isolate parser ─────────────────────────────────────────────────────────────
+// ── Isolate parser ────────────────────────────────────────────────────────────
 
 _GtfsScheduleIndex _parseScheduleInIsolate(Uint8List bytes) {
   final archive = ZipDecoder().decodeBytes(bytes);
 
-  String? routesCsv, tripsCsv, calCsv, calDatesCsv, stopTimesCsv, freqCsv;
+  String? stopsCsv, routesCsv, tripsCsv, calCsv, calDatesCsv,
+      stopTimesCsv, freqCsv;
+
   for (final f in archive) {
     if (!f.isFile) continue;
     final name = f.name.split('/').last.toLowerCase();
     switch (name) {
+      case 'stops.txt':
+        stopsCsv = String.fromCharCodes(f.content as List<int>);
       case 'routes.txt':
         routesCsv = String.fromCharCodes(f.content as List<int>);
       case 'trips.txt':
@@ -301,6 +441,24 @@ _GtfsScheduleIndex _parseScheduleInIsolate(Uint8List bytes) {
         stopTimesCsv = String.fromCharCodes(f.content as List<int>);
       case 'frequencies.txt':
         freqCsv = String.fromCharCodes(f.content as List<int>);
+    }
+  }
+
+  // ── stops.txt ─────────────────────────────────────────────────────────────
+  final stopNames = <String, String>{};
+  if (stopsCsv != null) {
+    final lines = stopsCsv.split('\n');
+    if (lines.isNotEmpty) {
+      final h = _header(lines[0]);
+      final iId = h['stop_id'] ?? -1;
+      final iName = h['stop_name'] ?? -1;
+      for (int i = 1; i < lines.length; i++) {
+        final c = _csvSplit(lines[i]);
+        if (c.isEmpty) continue;
+        final id = _cell(c, iId);
+        final name = _cell(c, iName);
+        if (id.isNotEmpty && name.isNotEmpty) stopNames[id] = name;
+      }
     }
   }
 
@@ -335,6 +493,7 @@ _GtfsScheduleIndex _parseScheduleInIsolate(Uint8List bytes) {
       final iRoute = h['route_id'] ?? -1;
       final iService = h['service_id'] ?? -1;
       final iHead = h['trip_headsign'] ?? -1;
+      final iDir = h['direction_id'] ?? -1;
       for (int i = 1; i < lines.length; i++) {
         final c = _csvSplit(lines[i]);
         if (c.isEmpty) continue;
@@ -344,6 +503,7 @@ _GtfsScheduleIndex _parseScheduleInIsolate(Uint8List bytes) {
           _cell(c, iRoute),
           _cell(c, iService),
           _cell(c, iHead),
+          int.tryParse(_cell(c, iDir)) ?? 0,
         );
       }
     }
@@ -398,7 +558,6 @@ _GtfsScheduleIndex _parseScheduleInIsolate(Uint8List bytes) {
   }
 
   // ── frequencies.txt ───────────────────────────────────────────────────────
-  // trip_id, start_time, end_time, headway_secs[, exact_times]
   final freqs = <String, List<_Frequency>>{};
   if (freqCsv != null) {
     final lines = freqCsv.split('\n');
@@ -424,9 +583,9 @@ _GtfsScheduleIndex _parseScheduleInIsolate(Uint8List bytes) {
   }
 
   // ── stop_times.txt ────────────────────────────────────────────────────────
-  // Store template times AND track each trip's base (first-stop) time.
   final byStop = <String, List<_StopTime>>{};
-  final tripBaseTimes = <String, int>{}; // trip_id → minimum arrival secs
+  final tripStops = <String, List<_TripStop>>{};
+  final tripBaseTimes = <String, int>{};
 
   if (stopTimesCsv != null) {
     final lines = stopTimesCsv.split('\n');
@@ -435,6 +594,7 @@ _GtfsScheduleIndex _parseScheduleInIsolate(Uint8List bytes) {
       final iTrip = h['trip_id'] ?? -1;
       final iArrival = h['arrival_time'] ?? -1;
       final iStopId = h['stop_id'] ?? -1;
+      final iSeq = h['stop_sequence'] ?? -1;
 
       for (int i = 1; i < lines.length; i++) {
         final line = lines[i];
@@ -450,9 +610,11 @@ _GtfsScheduleIndex _parseScheduleInIsolate(Uint8List bytes) {
         final arrSecs = _parseTime(_cell(c, iArrival));
         if (arrSecs < 0) continue;
 
-        byStop.putIfAbsent(stopId, () => []).add(_StopTime(tripId, arrSecs));
+        final seq = int.tryParse(_cell(c, iSeq)) ?? 0;
 
-        // Track trip's first (minimum) stop time as base for offset calc
+        byStop.putIfAbsent(stopId, () => []).add(_StopTime(tripId, arrSecs));
+        tripStops.putIfAbsent(tripId, () => []).add(_TripStop(stopId, seq));
+
         final existing = tripBaseTimes[tripId];
         if (existing == null || arrSecs < existing) {
           tripBaseTimes[tripId] = arrSecs;
@@ -463,6 +625,8 @@ _GtfsScheduleIndex _parseScheduleInIsolate(Uint8List bytes) {
 
   return _GtfsScheduleIndex(
     byStop: byStop,
+    tripStops: tripStops,
+    stopNames: stopNames,
     trips: trips,
     routeNames: routeNames,
     calendar: calendar,
@@ -472,7 +636,7 @@ _GtfsScheduleIndex _parseScheduleInIsolate(Uint8List bytes) {
   );
 }
 
-// ── CSV helpers ────────────────────────────────────────────────────────────────
+// ── CSV helpers ───────────────────────────────────────────────────────────────
 
 Map<String, int> _header(String line) {
   final cols = _csvSplit(line);

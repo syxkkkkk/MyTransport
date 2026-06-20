@@ -15,6 +15,7 @@ import 'screens/nearby_bus_screen.dart';
 import 'screens/live_bus_screen.dart';
 import 'screens/all_bus_stops_screen.dart';
 import 'screens/transit_map_screen.dart';
+import 'screens/profile_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -442,6 +443,8 @@ class MyTransportApp extends StatelessWidget {
             screen = const AllBusStopsScreen();
           case '/transit-map':
             screen = const TransitMapScreen();
+          case '/profile':
+            screen = const ProfileScreen();
           default:
             screen = const WelcomeScreen();
         }

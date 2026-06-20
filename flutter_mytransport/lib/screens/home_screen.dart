@@ -537,124 +537,147 @@ class _LocationCard extends StatelessWidget {
     required this.onRefreshTap,
   });
 
+  String get _greeting {
+    final h = DateTime.now().hour;
+    if (h < 12) return 'Good Morning';
+    if (h < 17) return 'Good Afternoon';
+    return 'Good Evening';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: AppColors.surfaceContainerLowest,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.outlineVariant),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [AppColors.primary, const Color(0xFF6366F1)],
+        ),
+        borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 4,
-            offset: const Offset(0, 1),
+            color: AppColors.primary.withOpacity(0.30),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header row
+          // Greeting + refresh row
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.my_location, size: 14, color: AppColors.primary),
-              const SizedBox(width: 6),
-              Text(
-                'CURRENT LOCATION',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.8,
-                  color: AppColors.outline,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _greeting,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                        color: Colors.white70,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    const Text(
+                      'Where are you headed?',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                        letterSpacing: -0.3,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const Spacer(),
-              // Refresh button
               GestureDetector(
                 onTap: onRefreshTap,
-                child: loading
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: AppColors.primary,
-                        ),
-                      )
-                    : const Icon(Icons.refresh, size: 16, color: AppColors.primary),
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: loading
+                      ? const SizedBox(
+                          width: 14, height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white70),
+                        )
+                      : const Icon(Icons.refresh, size: 16, color: Colors.white70),
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
-
-          // Location name
-          loading
-              ? Container(
-                  height: 22,
-                  width: 180,
-                  decoration: BoxDecoration(
-                    color: AppColors.surfaceVariant,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                )
-              : Text(
-                  name,
-                  style: GoogleFonts.inter(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.onSurface,
-                  ),
-                ),
-          const SizedBox(height: 4),
-
-          // Address
-          loading
-              ? Container(
-                  height: 14,
-                  width: 240,
-                  margin: const EdgeInsets.only(top: 4),
-                  decoration: BoxDecoration(
-                    color: AppColors.surfaceVariant,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                )
-              : Text(
-                  address,
-                  style: GoogleFonts.inter(
-                    fontSize: 13,
-                    color: AppColors.onSurfaceVariant,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 2,
-                ),
-
-          const SizedBox(height: 14),
-          const Divider(height: 1, color: AppColors.surfaceVariant),
           const SizedBox(height: 14),
 
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: onPinTap,
-              icon: const Icon(Icons.push_pin_outlined, size: 16),
-              label: const Text('Pin Location'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: AppColors.onPrimary,
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+          // Location row + pin button
+          GestureDetector(
+            onTap: onPinTap,
+            child: Row(
+              children: [
+                const Icon(Icons.location_on, size: 14, color: Colors.white70),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: loading
+                      ? Container(
+                          height: 14,
+                          width: 160,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.25),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        )
+                      : Text(
+                          name,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                            color: Colors.white,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                 ),
-                textStyle: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  letterSpacing: 0.2,
+                const SizedBox(width: 10),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.20),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.white.withOpacity(0.35)),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.push_pin_outlined, size: 12, color: Colors.white),
+                      SizedBox(width: 4),
+                      Text('Pin', style: TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.w600)),
+                    ],
+                  ),
                 ),
-              ),
+              ],
             ),
           ),
+
+          // Address line
+          if (!loading && address.isNotEmpty) ...[
+            const SizedBox(height: 5),
+            Padding(
+              padding: const EdgeInsets.only(left: 20),
+              child: Text(
+                address,
+                style: const TextStyle(fontSize: 11, color: Colors.white60),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -675,9 +698,9 @@ class _AIInputField extends StatelessWidget {
         border: Border.all(color: AppColors.outlineVariant),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 4,
-            offset: const Offset(0, 1),
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
           ),
         ],
       ),
@@ -788,7 +811,7 @@ class _ShortcutsGrid extends StatelessWidget {
       crossAxisCount: 2,
       mainAxisSpacing: 12,
       crossAxisSpacing: 12,
-      childAspectRatio: 1.4,
+      childAspectRatio: 1.05,
       children: items.map((item) => _ShortcutCard(item: item)).toList(),
     );
   }
@@ -824,35 +847,42 @@ class _ShortcutCard extends StatelessWidget {
           border: Border.all(color: AppColors.outlineVariant),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.04),
-              blurRadius: 4,
-              offset: const Offset(0, 1),
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
             ),
           ],
         ),
+        padding: const EdgeInsets.fromLTRB(14, 14, 10, 14),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: item.bgColor,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(item.icon, size: 24, color: item.iconColor),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    color: item.bgColor,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(item.icon, size: 28, color: item.iconColor),
+                ),
+                const Spacer(),
+                Icon(Icons.arrow_forward_ios, size: 12, color: AppColors.outline),
+              ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             Text(
               item.label,
               style: const TextStyle(
                 fontSize: 12,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w700,
                 letterSpacing: 0.1,
                 color: AppColors.onSurface,
                 height: 1.3,
               ),
-              textAlign: TextAlign.center,
             ),
           ],
         ),
@@ -1134,12 +1164,12 @@ class _NearbyStationsSection extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             const Text(
-              'Nearby Stations',
+              'NEARBY STATIONS',
               style: TextStyle(
-                fontSize: 16,
+                fontSize: 12,
                 fontWeight: FontWeight.w700,
-                color: AppColors.onSurface,
-                letterSpacing: 0.1,
+                color: AppColors.onSurfaceVariant,
+                letterSpacing: 1.2,
               ),
             ),
             GestureDetector(
@@ -1218,9 +1248,9 @@ class _NearbyStopCard extends StatelessWidget {
           border: Border.all(color: AppColors.outlineVariant),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.04),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
             ),
           ],
         ),
@@ -1410,28 +1440,24 @@ class _RouteBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(
-          color: const Color(0xFFE6A817), // amber/yellow border
-          width: 1.5,
-        ),
+        color: AppColors.secondaryContainer,
+        borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(
+          Icon(
             Icons.directions_bus_rounded,
             size: 11,
-            color: Color(0xFFE6A817),
+            color: AppColors.secondary,
           ),
           const SizedBox(width: 4),
           Text(
             routeId,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.w700,
-              color: Color(0xFFB8860B),
+              color: AppColors.secondary,
               letterSpacing: 0.3,
             ),
           ),

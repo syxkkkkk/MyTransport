@@ -175,9 +175,10 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                         onPressed: () =>
                             Navigator.pushNamed(context, '/home'),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.primaryContainer,
-                          foregroundColor: AppColors.onPrimaryContainer,
-                          elevation: 1,
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.white,
+                          elevation: 4,
+                          shadowColor: AppColors.primary.withOpacity(0.4),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),

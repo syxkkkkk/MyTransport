@@ -5,6 +5,7 @@ import '../services/gtfs_bus_stop_service.dart';
 import '../services/gtfs_schedule_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/bottom_nav_bar.dart';
+import 'bus_route_detail_screen.dart';
 
 // ── Screen ─────────────────────────────────────────────────────────────────────
 
@@ -25,7 +26,6 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
   // ETA state per stop
   final Map<String, List<GtfsArrival>> _arrivals = {};
   final Map<String, bool> _loadingEta = {};
-  String? _expandedStopId;
 
   double _radiusKm = 1.0;
 
@@ -33,7 +33,6 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
   void initState() {
     super.initState();
     _init();
-    // Pre-warm schedule data so the first ETA tap is fast
     GtfsScheduleService.preload();
   }
 
@@ -42,7 +41,6 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
   Future<void> _init() async {
     setState(() { _loadingLocation = true; _error = null; });
 
-    // 1 — Check location permission
     var perm = await Geolocator.checkPermission();
     if (perm == LocationPermission.denied) {
       perm = await Geolocator.requestPermission();
@@ -68,7 +66,6 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
       return;
     }
 
-    // 2 — Get position (try last known first, then fresh)
     try {
       Position? pos = await Geolocator.getLastKnownPosition();
       if (mounted && pos != null) {
@@ -77,7 +74,6 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
         _loadNearbyStops(pos);
       }
 
-      // Always also get a fresh fix
       final fresh = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
@@ -112,6 +108,10 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
         _stops = stops;
         _loadingStops = false;
       });
+      // Auto-load ETAs for all stops
+      for (final stop in stops) {
+        _loadEta(stop.stopId);
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -121,26 +121,22 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
     }
   }
 
-  // ── ETA fetch (GTFS schedule-based) ─────────────────────────────────────────
+  // ── ETA fetch ────────────────────────────────────────────────────────────────
 
   Future<void> _loadEta(String stopId) async {
     if (_loadingEta[stopId] == true) return;
     setState(() => _loadingEta[stopId] = true);
-
     try {
-      debugPrint('[ETA] Loading schedule-based ETA for stop $stopId');
       final arrivals = await GtfsScheduleService.getArrivals(
         stopId,
-        windowMinutes: 90,
+        windowMinutes: 360, // 6-hour window so we always show something
       );
-      debugPrint('[ETA] Got ${arrivals.length} arrivals for stop $stopId');
       if (!mounted) return;
       setState(() {
         _arrivals[stopId] = arrivals;
         _loadingEta[stopId] = false;
       });
     } catch (e) {
-      debugPrint('[ETA] Error: $e');
       if (!mounted) return;
       setState(() {
         _arrivals[stopId] = [];
@@ -174,14 +170,14 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
+      backgroundColor: AppColors.background,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        shadowColor: Colors.black12,
+        backgroundColor: AppColors.surface,
+        elevation: 1,
+        shadowColor: Colors.black.withOpacity(0.08),
         surfaceTintColor: Colors.transparent,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.black87),
+          icon: const Icon(Icons.arrow_back, color: AppColors.primary),
           onPressed: () => Navigator.maybePop(context),
         ),
         title: Text(
@@ -189,17 +185,16 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
           style: GoogleFonts.inter(
             fontSize: 17,
             fontWeight: FontWeight.w600,
-            color: Colors.black87,
+            color: AppColors.onSurface,
           ),
         ),
         actions: [
-          // Radius selector
           PopupMenuButton<double>(
             icon: const Icon(Icons.tune, color: AppColors.primary),
             tooltip: 'Search radius',
             initialValue: _radiusKm,
             onSelected: (r) {
-              setState(() => _radiusKm = r);
+              setState(() { _radiusKm = r; _arrivals.clear(); });
               if (_userPos != null) _loadNearbyStops(_userPos!);
             },
             itemBuilder: (_) => [
@@ -222,22 +217,20 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
   }
 
   Widget _buildBody() {
-    // Location loading
     if (_loadingLocation) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
+            const CircularProgressIndicator(color: AppColors.primary),
+            const SizedBox(height: 16),
             Text('Getting your location…',
-                style: TextStyle(color: Colors.black54)),
+                style: TextStyle(color: AppColors.onSurfaceVariant)),
           ],
         ),
       );
     }
 
-    // Error
     if (_error != null) {
       return Center(
         child: Padding(
@@ -246,20 +239,19 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(Icons.location_off_outlined,
-                  size: 56, color: Colors.black26),
+                  size: 56, color: AppColors.outlineVariant),
               const SizedBox(height: 16),
               Text(
                 _error!,
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 14, color: Colors.black54),
+                style: const TextStyle(fontSize: 14, color: AppColors.onSurfaceVariant),
               ),
               const SizedBox(height: 24),
               FilledButton.icon(
                 onPressed: _init,
                 icon: const Icon(Icons.refresh),
                 label: const Text('Try Again'),
-                style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.primary),
+                style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
               ),
             ],
           ),
@@ -267,22 +259,20 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
       );
     }
 
-    // Stops loading
     if (_loadingStops) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
+            const CircularProgressIndicator(color: AppColors.primary),
+            const SizedBox(height: 16),
             Text('Finding nearby bus stops…',
-                style: TextStyle(color: Colors.black54)),
+                style: TextStyle(color: AppColors.onSurfaceVariant)),
           ],
         ),
       );
     }
 
-    // No stops found
     if (_stops.isEmpty) {
       return Center(
         child: Padding(
@@ -291,21 +281,19 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(Icons.directions_bus_outlined,
-                  size: 56, color: Colors.black26),
+                  size: 56, color: AppColors.outlineVariant),
               const SizedBox(height: 16),
               Text(
                 'No bus stops found within ${_radiusKm < 1 ? '${(_radiusKm * 1000).round()} m' : '${_radiusKm.toStringAsFixed(_radiusKm == _radiusKm.roundToDouble() ? 0 : 1)} km'}.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87),
+                    fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.onSurface),
               ),
               const SizedBox(height: 8),
               const Text(
                 'Try increasing the search radius\nor browse all stops.',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, color: Colors.black54),
+                style: TextStyle(fontSize: 13, color: AppColors.onSurfaceVariant),
               ),
               const SizedBox(height: 24),
               Row(
@@ -320,10 +308,8 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
                   ),
                   const SizedBox(width: 12),
                   FilledButton(
-                    onPressed: () =>
-                        Navigator.pushNamed(context, '/all-bus-stops'),
-                    style: FilledButton.styleFrom(
-                        backgroundColor: AppColors.primary),
+                    onPressed: () => Navigator.pushNamed(context, '/all-bus-stops'),
+                    style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
                     child: const Text('All Stops Map'),
                   ),
                 ],
@@ -334,33 +320,18 @@ class _NearbyBusScreenState extends State<NearbyBusScreen> {
       );
     }
 
-    // Stop list
     return ListView.separated(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
       itemCount: _stops.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 4),
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (context, i) {
         final stop = _stops[i];
-        final isExpanded = _expandedStopId == stop.stopId;
         return _StopCard(
           stop: stop,
           distLabel: _distLabel(stop),
           walkMin: _walkMin(stop),
-          isExpanded: isExpanded,
           arrivals: _arrivals[stop.stopId],
           loadingEta: _loadingEta[stop.stopId] == true,
-          onTap: () {
-            setState(() {
-              if (isExpanded) {
-                _expandedStopId = null;
-              } else {
-                _expandedStopId = stop.stopId;
-                if (!_arrivals.containsKey(stop.stopId)) {
-                  _loadEta(stop.stopId);
-                }
-              }
-            });
-          },
           onRefreshEta: () => _loadEta(stop.stopId),
         );
       },
@@ -374,191 +345,158 @@ class _StopCard extends StatelessWidget {
   final GtfsBusStop stop;
   final String distLabel;
   final int walkMin;
-  final bool isExpanded;
   final List<GtfsArrival>? arrivals;
   final bool loadingEta;
-  final VoidCallback onTap;
   final VoidCallback onRefreshEta;
 
   const _StopCard({
     required this.stop,
     required this.distLabel,
     required this.walkMin,
-    required this.isExpanded,
     required this.arrivals,
     required this.loadingEta,
-    required this.onTap,
     required this.onRefreshEta,
   });
 
-
-
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 12),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.06),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.outlineVariant),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Header row ─────────────────────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
-              child: Row(
-                children: [
-                  // Bus stop icon
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: AppColors.primaryContainer,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(Icons.directions_bus_filled,
-                        size: 22, color: AppColors.primary),
-                  ),
-                  const SizedBox(width: 12),
-
-                  // Name + distance
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          stop.stopName,
-                          style: GoogleFonts.inter(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.black87,
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 3),
-                        Row(
-                          children: [
-                            const Icon(Icons.directions_walk,
-                                size: 13, color: Colors.black45),
-                            const SizedBox(width: 3),
-                            Text(
-                              '$walkMin min walk',
-                              style: const TextStyle(
-                                  fontSize: 12, color: Colors.black54),
-                            ),
-                            const SizedBox(width: 8),
-                            Container(
-                              width: 3,
-                              height: 3,
-                              decoration: const BoxDecoration(
-                                  color: Colors.black26,
-                                  shape: BoxShape.circle),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              distLabel,
-                              style: const TextStyle(
-                                  fontSize: 12, color: Colors.black54),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  // Expand arrow
-                  AnimatedRotation(
-                    turns: isExpanded ? 0.5 : 0,
-                    duration: const Duration(milliseconds: 200),
-                    child: const Icon(Icons.keyboard_arrow_down,
-                        size: 22, color: Colors.black38),
-                  ),
-                ],
-              ),
-            ),
-
-            // ── Expanded ETA section ──────────────────────────────────────
-            if (isExpanded) ...[
-              const Divider(height: 1, indent: 16, endIndent: 16,
-                  color: Color(0xFFEEEEEE)),
-              if (loadingEta)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 16),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      SizedBox(
-                        width: 16, height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      SizedBox(width: 10),
-                      Text('Loading schedule…',
-                          style: TextStyle(fontSize: 13, color: Colors.black45)),
-                    ],
-                  ),
-                )
-              else if (arrivals == null || arrivals!.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.schedule_outlined,
-                          size: 16, color: Colors.black38),
-                      const SizedBox(width: 8),
-                      const Expanded(
-                        child: Text(
-                          'No buses scheduled in the next 90 minutes.',
-                          style: TextStyle(fontSize: 13, color: Colors.black45),
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: onRefreshEta,
-                        style: TextButton.styleFrom(
-                            padding: EdgeInsets.zero,
-                            minimumSize: const Size(40, 28)),
-                        child: const Text('Retry',
-                            style: TextStyle(fontSize: 12)),
-                      ),
-                    ],
-                  ),
-                )
-              else
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
+            // ── Header ──────────────────────────────────────────────────────
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Schedule-based indicator
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.wifi, size: 11, color: Colors.orange),
-                            const SizedBox(width: 4),
-                            const Text(
-                              'Schedule-based · next 90 min',
-                              style: TextStyle(
-                                  fontSize: 10, color: Colors.black38),
-                            ),
-                          ],
+                      Text(
+                        stop.stopName,
+                        style: GoogleFonts.inter(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.onSurface,
                         ),
                       ),
-                      for (final arr in arrivals!)
-                        _ArrivalRow(arrival: arr),
+                      const SizedBox(height: 5),
+                      Row(
+                        children: [
+                          const Icon(Icons.directions_bus_outlined,
+                              size: 13, color: AppColors.onSurfaceVariant),
+                          const SizedBox(width: 4),
+                          const Text(
+                            'Bus stop',
+                            style: TextStyle(
+                                fontSize: 12, color: AppColors.onSurfaceVariant),
+                          ),
+                          const SizedBox(width: 10),
+                          const Icon(Icons.directions_walk,
+                              size: 13, color: AppColors.onSurfaceVariant),
+                          const SizedBox(width: 3),
+                          Text(
+                            '$walkMin min walk',
+                            style: const TextStyle(
+                                fontSize: 12, color: AppColors.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
-            ],
+                // Circular arrow button
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceVariant,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.chevron_right,
+                      size: 18, color: AppColors.onSurfaceVariant),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 14),
+            const Divider(height: 1, color: AppColors.outlineVariant),
+            const SizedBox(height: 12),
+
+            // ── Arrivals ─────────────────────────────────────────────────────
+            if (loadingEta)
+              Row(
+                children: [
+                  const SizedBox(
+                    width: 14, height: 14,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: AppColors.primary),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Loading schedule…',
+                    style: TextStyle(fontSize: 12, color: AppColors.onSurfaceVariant),
+                  ),
+                ],
+              )
+            else if (arrivals == null || arrivals!.isEmpty)
+              Row(
+                children: [
+                  const Icon(Icons.schedule_outlined,
+                      size: 14, color: AppColors.outline),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'No buses scheduled in the next 6 hours.',
+                      style: TextStyle(fontSize: 12, color: AppColors.onSurfaceVariant),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: onRefreshEta,
+                    style: TextButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        minimumSize: const Size(40, 28)),
+                    child: const Text('Retry', style: TextStyle(fontSize: 12)),
+                  ),
+                ],
+              )
+            else
+              Column(
+                children: [
+                  for (int i = 0; i < arrivals!.take(3).length; i++) ...[
+                    _ArrivalRow(
+                      arrival: arrivals![i],
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => BusRouteDetailScreen(
+                            stopId: stop.stopId,
+                            stopName: stop.stopName,
+                            routeShortName: arrivals![i].routeId,
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (i < arrivals!.take(3).length - 1)
+                      const Divider(
+                          height: 16, indent: 0, color: AppColors.outlineVariant),
+                  ],
+                ],
+              ),
           ],
         ),
       ),
@@ -570,95 +508,108 @@ class _StopCard extends StatelessWidget {
 
 class _ArrivalRow extends StatelessWidget {
   final GtfsArrival arrival;
-  const _ArrivalRow({required this.arrival});
+  final VoidCallback? onTap;
+  const _ArrivalRow({required this.arrival, this.onTap});
+
+  String _formatEta(int minutes) {
+    if (minutes == 0) return 'Now';
+    if (minutes >= 60) {
+      final h = minutes ~/ 60;
+      final m = minutes % 60;
+      return '$h hrs ${m.toString().padLeft(2, '0')} min';
+    }
+    return '$minutes min';
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          // Route badge
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFF3CD),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: const Color(0xFFE6A817), width: 1.5),
-            ),
-            child: Text(
-              arrival.routeId,
-              style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                color: Color(0xFF996600),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-
-          // Direction
-          Expanded(
-            child: Text(
-              arrival.direction.isNotEmpty
-                  ? arrival.direction
-                  : arrival.routeId,
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          const SizedBox(width: 8),
-
-          // ETA column
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              // Signal icon
-              Icon(
-                Icons.wifi,
-                size: 12,
-                color: arrival.eta1Min == null
-                    ? Colors.black26
-                    : arrival.isLive
-                        ? const Color(0xFF1B8A3E)
-                        : Colors.orange,
-              ),
-              const SizedBox(height: 2),
-              // Primary ETA
-              if (arrival.eta1Min != null)
-                Text(
-                  arrival.eta1Min == 0 ? 'Now' : '${arrival.eta1Min} min',
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: _etaColor(arrival.eta1Min!),
-                    height: 1.1,
-                  ),
-                )
-              else
-                const Text('—',
-                    style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.black26)),
-              // Secondary ETA
-              if (arrival.eta2Min != null)
-                Text(
-                  '${arrival.eta2Min} min',
-                  style: const TextStyle(fontSize: 11, color: Colors.black38),
-                ),
-            ],
-          ),
-        ],
-      ),
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: _buildContent(),
     );
   }
 
-  Color _etaColor(int min) {
-    if (min <= 3) return const Color(0xFF1B8A3E);
-    if (min <= 8) return const Color(0xFF1565C0);
-    return Colors.black87;
+  Widget _buildContent() {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Left: route badge + direction
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Route badge — yellow border style matching reference
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceContainerLowest,
+                  border: Border.all(
+                      color: const Color(0xFFE6A817), width: 1.5),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      arrival.routeId,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.onSurface,
+                      ),
+                    ),
+                    const SizedBox(width: 5),
+                    const Icon(Icons.directions_bus,
+                        size: 13, color: AppColors.onSurfaceVariant),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 5),
+              if (arrival.direction.isNotEmpty)
+                Text(
+                  arrival.direction,
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.onSurfaceVariant),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 16),
+
+        // Right: primary ETA + secondary ETA
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (arrival.eta1Min != null)
+              Text(
+                _formatEta(arrival.eta1Min!),
+                style: GoogleFonts.inter(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.onSurface,
+                ),
+              )
+            else
+              const Text(
+                '—',
+                style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.outline),
+              ),
+            if (arrival.eta2Min != null)
+              Text(
+                '└ ${_formatEta(arrival.eta2Min!)}',
+                style: const TextStyle(
+                    fontSize: 12, color: AppColors.onSurfaceVariant),
+              ),
+          ],
+        ),
+      ],
+    );
   }
 }

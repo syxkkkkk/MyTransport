@@ -289,9 +289,9 @@ class _CategoryCard extends StatelessWidget {
             ),
             const Spacer(),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
-                  color: def.color, borderRadius: BorderRadius.circular(12)),
+                  color: def.color, borderRadius: BorderRadius.circular(20)),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
                 Container(width: 5, height: 5,
                     decoration: BoxDecoration(
