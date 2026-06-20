@@ -11,6 +11,10 @@ import 'screens/chatbot_screen.dart';
 import 'screens/trip_summary_screen.dart';
 import 'screens/live_train_notifications_screen.dart';
 import 'screens/ar_navigation_screen.dart';
+import 'screens/nearby_bus_screen.dart';
+import 'screens/live_bus_screen.dart';
+import 'screens/all_bus_stops_screen.dart';
+import 'screens/transit_map_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -430,6 +434,14 @@ class MyTransportApp extends StatelessWidget {
             screen = const LiveTrainNotificationsScreen();
           case '/ar-navigation':
             screen = const ARNavigationScreen(); // args: {latitude, longitude, stationName}
+          case '/nearby-bus':
+            screen = const NearbyBusScreen();
+          case '/live-bus':
+            screen = const LiveBusScreen();
+          case '/all-bus-stops':
+            screen = const AllBusStopsScreen();
+          case '/transit-map':
+            screen = const TransitMapScreen();
           default:
             screen = const WelcomeScreen();
         }
